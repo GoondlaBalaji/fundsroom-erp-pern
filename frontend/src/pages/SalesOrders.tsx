@@ -21,13 +21,15 @@ export const SalesOrders: React.FC = () => {
   const [selectedOrder, setSelectedOrder] = useState<SalesOrder | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  const fetchOrders = async () => {
+  const fetchOrders = async (): Promise<SalesOrder[]> => {
     try {
       setLoading(true);
       const data = await salesOrderApi.getAll();
       setOrders(data);
+      return data;
     } catch (err) {
       console.error(err);
+      return [];
     } finally {
       setLoading(false);
     }
@@ -53,9 +55,10 @@ export const SalesOrders: React.FC = () => {
       setActionLoading(true);
       const updated = await salesOrderApi.confirmAndReserve(orderId);
       alert(`Sales Order ${updated.orderNumber} successfully confirmed! Inventory reserved.`);
-      await fetchOrders();
+      const freshOrders = await fetchOrders();
       if (selectedOrder && selectedOrder.id === orderId) {
-        setSelectedOrder(updated);
+        const fresh = freshOrders.find((o) => o.id === orderId);
+        if (fresh) setSelectedOrder(fresh);
       }
     } catch (err: any) {
       alert(`Confirmation failed: ${err.message}`);
@@ -81,9 +84,10 @@ export const SalesOrders: React.FC = () => {
       setActionLoading(true);
       const updated = await salesOrderApi.cancel(order.id);
       alert(`Sales Order ${updated.orderNumber} has been cancelled.`);
-      await fetchOrders();
+      const freshOrders = await fetchOrders();
       if (selectedOrder && selectedOrder.id === order.id) {
-        setSelectedOrder(updated);
+        const fresh = freshOrders.find((o) => o.id === order.id);
+        if (fresh) setSelectedOrder(fresh);
       }
     } catch (err: any) {
       alert(`Cancellation failed: ${err.message}`);

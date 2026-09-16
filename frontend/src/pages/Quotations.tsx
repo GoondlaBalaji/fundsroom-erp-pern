@@ -99,18 +99,27 @@ export const Quotations: React.FC = () => {
   };
 
   // Authoritative real-time preview of calculation matching backend rules
+  const round2 = (num: number): number => {
+    return Math.round((num + Number.EPSILON) * 100) / 100;
+  };
+
   const previewTotals = formItems.reduce(
     (acc, item) => {
-      const base = item.quantity * item.unitPrice;
-      const discount = Math.round((base * (item.discountPct / 100)) * 100) / 100;
-      const net = Math.round((base - discount) * 100) / 100;
-      const gst = Math.round((net * (item.gstPct / 100)) * 100) / 100;
-      const line = Math.round((net + gst) * 100) / 100;
+      const quantity = Math.max(1, Math.floor(item.quantity));
+      const unitPrice = round2(Math.max(0, item.unitPrice));
+      const discountPct = Math.min(100, Math.max(0, item.discountPct));
+      const gstPct = Math.max(0, item.gstPct);
 
-      acc.subtotal += base;
-      acc.totalDiscount += discount;
-      acc.totalGst += gst;
-      acc.grandTotal += line;
+      const base = round2(quantity * unitPrice);
+      const discount = round2(base * (discountPct / 100));
+      const net = round2(base - discount);
+      const gst = round2(net * (gstPct / 100));
+      const line = round2(net + gst);
+
+      acc.subtotal = round2(acc.subtotal + base);
+      acc.totalDiscount = round2(acc.totalDiscount + discount);
+      acc.totalGst = round2(acc.totalGst + gst);
+      acc.grandTotal = round2(acc.grandTotal + line);
       return acc;
     },
     { subtotal: 0, totalDiscount: 0, totalGst: 0, grandTotal: 0 }
@@ -121,10 +130,14 @@ export const Quotations: React.FC = () => {
     setError(null);
     setSubmitting(true);
     try {
+      if (!validUntil) {
+        throw new Error('Valid expiration date is required');
+      }
+
       const payload: CreateQuotationInput = {
         enquiryId: selectedEnquiryId,
         validUntil: new Date(validUntil).toISOString(),
-        clientGrandTotal: Math.round(previewTotals.grandTotal * 100) / 100,
+        clientGrandTotal: round2(previewTotals.grandTotal),
         items: formItems.map((i) => ({
           productId: i.productId,
           quantity: Number(i.quantity),

@@ -58,8 +58,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Convenience helper for local case-study demonstration
     const credentials =
       role === 'ADMIN'
-        ? { email: 'admin@fundsroom.com', password: 'Password@123' }
-        : { email: 'sales@fundsroom.com', password: 'Password@123' };
+        ? { email: 'admin@fundsroom.com', password: 'AdminPassword@123' }
+        : { email: 'sales@fundsroom.com', password: 'SalesPassword@123' };
 
     await login(credentials.email, credentials.password);
   };

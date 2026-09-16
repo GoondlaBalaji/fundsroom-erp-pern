@@ -22,9 +22,9 @@ export const Login: React.FC = () => {
     }
   };
 
-  const handleFillCredentials = (fillEmail: string) => {
+  const handleFillCredentials = (fillEmail: string, fillPass: string) => {
     setEmail(fillEmail);
-    setPassword('Password@123');
+    setPassword(fillPass);
     setError(null);
   };
 
@@ -146,7 +146,7 @@ export const Login: React.FC = () => {
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              onClick={() => handleFillCredentials('admin@fundsroom.com')}
+              onClick={() => handleFillCredentials('admin@fundsroom.com', 'AdminPassword@123')}
               style={{ display: 'flex', flexDirection: 'column', padding: '8px', textAlign: 'left', alignItems: 'flex-start' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#d97706' }}>
@@ -158,7 +158,7 @@ export const Login: React.FC = () => {
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              onClick={() => handleFillCredentials('sales@fundsroom.com')}
+              onClick={() => handleFillCredentials('sales@fundsroom.com', 'SalesPassword@123')}
               style={{ display: 'flex', flexDirection: 'column', padding: '8px', textAlign: 'left', alignItems: 'flex-start' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#059669' }}>
