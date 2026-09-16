@@ -71,14 +71,50 @@ export class DispatchService {
    */
   static async processDispatch(data: CreateDispatchDTO, adminUserId: string) {
     return prisma.$transaction(async (tx) => {
-      // 1. Fetch sales order with items
+      // 1. Lock sales order row using row-level locking
+      const lockedOrders: { id: string; status: SalesOrderStatus; order_number: string }[] = await tx.$queryRawUnsafe(
+        `SELECT id, status, order_number FROM sales_orders WHERE id = $1 FOR UPDATE`,
+        data.salesOrderId
+      );
+
+      if (!lockedOrders || lockedOrders.length === 0) {
+        throw new NotFoundError(`Sales Order with ID ${data.salesOrderId} not found`);
+      }
+
+      const lockedOrder = lockedOrders[0];
+
+      // 2. Validate order status under the lock
+      if (lockedOrder.status === SalesOrderStatus.PENDING) {
+        throw new ValidationError('Cannot dispatch an unconfirmed Sales Order. Please confirm and reserve stock first.');
+      }
+
+      if (lockedOrder.status === SalesOrderStatus.DISPATCHED) {
+        throw new ConflictError(`Sales Order ${lockedOrder.order_number} has already been dispatched.`);
+      }
+
+      if (lockedOrder.status === SalesOrderStatus.CANCELLED) {
+        throw new ValidationError(`Cannot dispatch a cancelled Sales Order.`);
+      }
+
+      if (lockedOrder.status !== SalesOrderStatus.CONFIRMED) {
+        throw new ValidationError(`Order status must be CONFIRMED to dispatch, but is '${lockedOrder.status}'.`);
+      }
+
+      // Check if dispatch record already exists (1:1 constraint)
+      const existingDispatch = await tx.dispatch.findUnique({
+        where: { salesOrderId: data.salesOrderId },
+      });
+      if (existingDispatch) {
+        throw new ConflictError(`Sales Order ${lockedOrder.order_number} has already been dispatched.`);
+      }
+
+      // 3. Fetch full items for the order
       const order = await tx.salesOrder.findUnique({
         where: { id: data.salesOrderId },
         include: {
           items: {
             include: { product: true },
           },
-          dispatches: true,
         },
       });
 
@@ -86,24 +122,7 @@ export class DispatchService {
         throw new NotFoundError(`Sales Order with ID ${data.salesOrderId} not found`);
       }
 
-      // 2. Validate order status
-      if (order.status === SalesOrderStatus.PENDING) {
-        throw new ValidationError('Cannot dispatch an unconfirmed Sales Order. Please confirm and reserve stock first.');
-      }
-
-      if (order.status === SalesOrderStatus.DISPATCHED || order.dispatches.length > 0) {
-        throw new ConflictError(`Sales Order ${order.orderNumber} has already been dispatched.`);
-      }
-
-      if (order.status === SalesOrderStatus.CANCELLED) {
-        throw new ValidationError(`Cannot dispatch a cancelled Sales Order.`);
-      }
-
-      if (order.status !== SalesOrderStatus.CONFIRMED) {
-        throw new ValidationError(`Order status must be CONFIRMED to dispatch, but is '${order.status}'.`);
-      }
-
-      // 3. Acquire pessimistic row locks on inventory rows
+      // 4. Acquire pessimistic row locks on inventory rows
       const sortedProductIds = [...new Set(order.items.map((i) => i.productId))].sort();
 
       const lockedInventories: LockedInventoryRow[] = await tx.$queryRawUnsafe(

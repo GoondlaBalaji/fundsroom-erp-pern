@@ -191,7 +191,7 @@ model SalesOrder {
   updatedAt     DateTime         @updatedAt @map("updated_at")
 
   items         SalesOrderItem[]
-  dispatches    Dispatch[]
+  dispatch      Dispatch?
 
   @@map("sales_orders")
 }
@@ -213,7 +213,7 @@ model SalesOrderItem {
 model Dispatch {
   id             String         @id @default(uuid())
   dispatchNumber String         @unique @map("dispatch_number")
-  salesOrderId   String         @map("sales_order_id")
+  salesOrderId   String         @unique @map("sales_order_id")
   salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
   dispatchDate   DateTime       @default(now()) @map("dispatch_date")
   vehicleNumber  String         @map("vehicle_number")

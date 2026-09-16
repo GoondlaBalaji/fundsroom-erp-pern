@@ -53,7 +53,7 @@ export class QuotationService {
         salesOrder: {
           include: {
             items: { include: { product: true } },
-            dispatches: true,
+            dispatch: true,
           },
         },
       },
@@ -178,55 +178,60 @@ export class QuotationService {
   }
 
   static async convertToSalesOrder(id: string, _userId: string) {
-    // 1. Fetch quotation with items
-    const quotation = await prisma.quotation.findUnique({
-      where: { id },
-      include: {
-        items: true,
-        salesOrder: true,
-        enquiry: true,
-      },
-    });
-
-    if (!quotation) {
-      throw new NotFoundError(`Quotation with ID ${id} not found`);
-    }
-
-    // 2. Strict Rule: Only ACCEPTED quotations can be converted
-    if (quotation.status !== QuotationStatus.ACCEPTED) {
-      throw new ValidationError(
-        `Cannot convert quotation to Sales Order. Quotation must be in ACCEPTED status, but is currently '${quotation.status}'.`
-      );
-    }
-
-    // 3. Strict Rule: One quotation must NOT accidentally generate multiple Sales Orders
-    if (quotation.salesOrder) {
-      throw new ConflictError(
-        `A Sales Order (${quotation.salesOrder.orderNumber}) has already been generated for this quotation.`
-      );
-    }
-
-    // 4. Generate unique Sales Order number: SO-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await prisma.salesOrder.count({
-      where: {
-        orderNumber: {
-          startsWith: `SO-${dateStr}`,
-        },
-      },
-    });
-    const seq = String(countToday + 1).padStart(4, '0');
-    const orderNumber = `SO-${dateStr}-${seq}`;
-
-    // 5. Transactionally create Sales Order and link to Quotation
     return prisma.$transaction(async (tx) => {
-      // Re-verify under transaction lock to prevent race conversion
+      // 1. Lock quotation row using row-level locking
+      const lockedQuotations: { id: string; status: QuotationStatus; quotation_number: string }[] = await tx.$queryRawUnsafe(
+        `SELECT id, status, quotation_number FROM quotations WHERE id = $1 FOR UPDATE`,
+        id
+      );
+
+      if (!lockedQuotations || lockedQuotations.length === 0) {
+        throw new NotFoundError(`Quotation with ID ${id} not found`);
+      }
+
+      const lockedQuotation = lockedQuotations[0];
+
+      // 2. Strict Rule: Only ACCEPTED quotations can be converted
+      if (lockedQuotation.status !== QuotationStatus.ACCEPTED) {
+        throw new ValidationError(
+          `Cannot convert quotation to Sales Order. Quotation must be in ACCEPTED status, but is currently '${lockedQuotation.status}'.`
+        );
+      }
+
+      // 3. Strict Rule: Check if a Sales Order already exists for this quotation (1:1 constraint)
       const existing = await tx.salesOrder.findUnique({
         where: { quotationId: id },
       });
       if (existing) {
-        throw new ConflictError(`Sales Order already exists for Quotation ID ${id}`);
+        throw new ConflictError(
+          `A Sales Order (${existing.orderNumber}) has already been generated for this quotation.`
+        );
       }
+
+      // 4. Fetch full quotation with items
+      const quotation = await tx.quotation.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          enquiry: true,
+        },
+      });
+
+      if (!quotation) {
+        throw new NotFoundError(`Quotation with ID ${id} not found`);
+      }
+
+      // 5. Generate unique Sales Order number: SO-YYYYMMDD-XXXX
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const countToday = await tx.salesOrder.count({
+        where: {
+          orderNumber: {
+            startsWith: `SO-${dateStr}`,
+          },
+        },
+      });
+      const seq = String(countToday + 1).padStart(4, '0');
+      const orderNumber = `SO-${dateStr}-${seq}`;
 
       const salesOrder = await tx.salesOrder.create({
         data: {
