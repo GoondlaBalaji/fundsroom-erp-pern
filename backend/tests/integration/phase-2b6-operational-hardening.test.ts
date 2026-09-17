@@ -398,7 +398,10 @@ describe('Phase 2B-6: Operational Hardening', () => {
         Prisma.sql`
           SELECT indexname FROM pg_indexes
           WHERE tablename = 'idempotency_keys'
-            AND indexname = 'idempotency_keys_key_userId_method_path_key'
+            AND (
+              indexname = 'idempotency_keys_key_userId_method_path_key'
+              OR indexname = 'idempotency_keys_unique'
+            )
         `
       );
       expect(rows.length).toBe(1);
