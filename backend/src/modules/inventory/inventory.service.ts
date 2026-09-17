@@ -12,6 +12,10 @@ export class InventoryService {
     });
 
     return inventories.map((inv) => {
+      // BUG-12 FIX: Report the true available quantity without masking.
+      // Math.max(0, ...) previously hid data-integrity defects (e.g. when
+      // damaged_quantity pushes availability negative despite the
+      // reserved_quantity <= physical_quantity DB constraint).
       const availableQuantity = inv.physicalQuantity - inv.reservedQuantity - inv.damagedQuantity;
       return {
         id: inv.id,
@@ -24,7 +28,7 @@ export class InventoryService {
         physicalQuantity: inv.physicalQuantity,
         reservedQuantity: inv.reservedQuantity,
         damagedQuantity: inv.damagedQuantity,
-        availableQuantity: Math.max(0, availableQuantity),
+        availableQuantity,
         updatedAt: inv.updatedAt,
       };
     });
@@ -46,7 +50,8 @@ export class InventoryService {
       physicalQuantity: inv.physicalQuantity,
       reservedQuantity: inv.reservedQuantity,
       damagedQuantity: inv.damagedQuantity,
-      availableQuantity: Math.max(0, inv.physicalQuantity - inv.reservedQuantity - inv.damagedQuantity),
+      // BUG-12 FIX: Report true calculated value without masking.
+      availableQuantity: inv.physicalQuantity - inv.reservedQuantity - inv.damagedQuantity,
       updatedAt: inv.updatedAt,
     };
   }

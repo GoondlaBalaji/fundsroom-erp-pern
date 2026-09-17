@@ -4,9 +4,19 @@ import { EnquiryStatus } from '@prisma/client';
 export const createEnquirySchema = z.object({
   body: z.object({
     customerId: z.string().min(1, 'Customer is required'),
-    requiredDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
-      message: 'Valid required date is required',
-    }),
+    requiredDate: z
+      .string()
+      .refine((val) => !isNaN(Date.parse(val)), {
+        message: 'Valid required date is required',
+      })
+      // BUG-11 FIX: Reject dates in the past. Compare calendar dates as
+      // YYYY-MM-DD strings (lexicographic order is correct for ISO dates).
+      // We slice to 10 chars so both datetime strings and date-only strings
+      // work correctly. Comparison is done in UTC to match the server clock.
+      .refine(
+        (val) => val.slice(0, 10) >= new Date().toISOString().slice(0, 10),
+        { message: 'Required date cannot be in the past' }
+      ),
     notes: z.string().optional(),
     items: z
       .array(
