@@ -142,16 +142,22 @@ export class QuotationService {
   }
 
   static async updateStatus(id: string, newStatus: QuotationStatus) {
-    const quotation = await prisma.quotation.findUnique({
-      where: { id },
-      include: { enquiry: true },
-    });
-
-    if (!quotation) {
-      throw new NotFoundError(`Quotation with ID ${id} not found`);
-    }
-
     return prisma.$transaction(async (tx) => {
+      const quotation = await tx.quotation.findUnique({
+        where: { id },
+        include: { enquiry: true, salesOrder: true },
+      });
+
+      if (!quotation) {
+        throw new NotFoundError(`Quotation with ID ${id} not found`);
+      }
+
+      if (quotation.salesOrder) {
+        throw new ConflictError(
+          'Cannot modify status of a quotation that has already been converted to a Sales Order'
+        );
+      }
+
       const updated = await tx.quotation.update({
         where: { id },
         data: { status: newStatus },

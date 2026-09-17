@@ -132,10 +132,11 @@ export class EnquiryService {
       throw new NotFoundError(`Enquiry with ID ${id} not found`);
     }
 
-    // Enforce business state transitions
-    // NEW -> QUOTED, LOST
-    // QUOTED -> WON, LOST
-    if (enquiry.status === EnquiryStatus.WON && newStatus !== EnquiryStatus.WON) {
+    if (newStatus === EnquiryStatus.WON) {
+      throw new ValidationError('Enquiries can only transition to WON via Sales Order conversion');
+    }
+
+    if (enquiry.status === EnquiryStatus.WON) {
       throw new ValidationError('A WON enquiry cannot change status');
     }
 
