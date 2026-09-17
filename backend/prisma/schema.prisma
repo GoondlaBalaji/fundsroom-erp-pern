@@ -249,3 +249,25 @@ model DocumentSequence {
   @@id([docType, dateKey])
   @@map("document_sequences")
 }
+
+enum IdempotencyStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model IdempotencyKey {
+  id            String            @id @default(uuid())
+  key           String
+  userId        String
+  method        String
+  path          String
+  payloadHash   String
+  status        IdempotencyStatus @default(PROCESSING)
+  responseStatus Int?
+  responseBody  String?
+  createdAt     DateTime          @default(now())
+  expiresAt     DateTime
+  @@unique([key, userId, method, path])
+  @@index([expiresAt])
+}
