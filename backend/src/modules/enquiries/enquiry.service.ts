@@ -1,7 +1,8 @@
 import prisma from '../../config/prisma';
-import { EnquiryStatus } from '@prisma/client';
+import { Prisma, EnquiryStatus } from '@prisma/client';
 import { NotFoundError, ValidationError } from '../../utils/errors';
 import { nextSequence, todayKey } from '../../utils/sequence';
+
 
 export interface CreateEnquiryItemDTO {
   productId: string;
@@ -67,8 +68,22 @@ export class EnquiryService {
   }
 
   static async create(data: CreateEnquiryDTO, userId: string) {
+    return EnquiryService.createInTx(prisma, data, userId);
+  }
+
+  /**
+   * Create an enquiry + items using the supplied Prisma client/transaction.
+   * Used by the idempotency-aware controller to coordinate inside one transaction.
+   */
+  static async createInTx(
+    tx: Prisma.TransactionClient | typeof prisma,
+    data: CreateEnquiryDTO,
+    userId: string
+  ) {
+    const client = tx as Prisma.TransactionClient;
+
     // 1. Validate customer exists
-    const customer = await prisma.customer.findUnique({
+    const customer = await client.customer.findUnique({
       where: { id: data.customerId },
     });
     if (!customer) {
@@ -77,7 +92,7 @@ export class EnquiryService {
 
     // 2. Validate all products exist
     const productIds = data.items.map((i) => i.productId);
-    const existingProducts = await prisma.product.findMany({
+    const existingProducts = await client.product.findMany({
       where: { id: { in: productIds } },
     });
 
@@ -85,35 +100,32 @@ export class EnquiryService {
       throw new ValidationError('One or more selected products are invalid or do not exist');
     }
 
-    // 3. Create enquiry + items transactionally with atomic sequence number
-    return prisma.$transaction(async (tx) => {
-      // BUG-08 FIX: Atomic sequence allocation inside the transaction
-      const dateStr = todayKey();
-      const seq = await nextSequence(tx, 'ENQ', dateStr);
-      const enquiryNumber = `ENQ-${dateStr}-${seq}`;
+    // 3. Atomic sequence allocation
+    const dateStr = todayKey();
+    const seq = await nextSequence(client, 'ENQ', dateStr);
+    const enquiryNumber = `ENQ-${dateStr}-${seq}`;
 
-      return tx.enquiry.create({
-        data: {
-          enquiryNumber,
-          customerId: data.customerId,
-          requiredDate: new Date(data.requiredDate),
-          notes: data.notes || null,
-          status: EnquiryStatus.NEW,
-          createdById: userId,
-          items: {
-            create: data.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-            })),
-          },
+    return client.enquiry.create({
+      data: {
+        enquiryNumber,
+        customerId: data.customerId,
+        requiredDate: new Date(data.requiredDate),
+        notes: data.notes || null,
+        status: EnquiryStatus.NEW,
+        createdById: userId,
+        items: {
+          create: data.items.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+          })),
         },
-        include: {
-          customer: true,
-          items: {
-            include: { product: true },
-          },
+      },
+      include: {
+        customer: true,
+        items: {
+          include: { product: true },
         },
-      });
+      },
     });
   }
 
