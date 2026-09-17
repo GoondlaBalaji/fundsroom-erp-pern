@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import prisma from '../../config/prisma';
 import { NotFoundError } from '../../utils/errors';
 
@@ -8,6 +9,8 @@ export interface CreateCustomerDTO {
   email: string;
   city: string;
 }
+
+type TxClient = Prisma.TransactionClient;
 
 export class CustomerService {
   static async getAll() {
@@ -38,8 +41,19 @@ export class CustomerService {
     return customer;
   }
 
+  /**
+   * Create a customer using the global prisma client (non-idempotent path).
+   */
   static async create(data: CreateCustomerDTO) {
-    return prisma.customer.create({
+    return CustomerService.createInTx(prisma, data);
+  }
+
+  /**
+   * Create a customer within a supplied Prisma client/transaction.
+   * Used by the idempotency-aware controller to keep creation inside the same tx.
+   */
+  static async createInTx(tx: TxClient | typeof prisma, data: CreateCustomerDTO) {
+    return (tx as TxClient).customer.create({
       data: {
         companyName: data.companyName.trim(),
         contactPerson: data.contactPerson.trim(),
