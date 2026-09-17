@@ -396,9 +396,16 @@ describe('Phase 2B-6: Operational Hardening', () => {
     it('D2: composite unique index exists on idempotency_keys table', async () => {
       const rows = await prisma.$queryRaw<{ indexname: string }[]>(
         Prisma.sql`
-          SELECT indexname FROM pg_indexes
-          WHERE tablename = 'idempotency_keys'
-            AND indexname = 'idempotency_keys_key_userId_method_path_key'
+          SELECT c.conname AS indexname
+          FROM pg_constraint c
+          INNER JOIN pg_class t ON t.oid = c.conrelid
+          WHERE t.relname = 'idempotency_keys'
+            AND c.contype = 'u'
+            AND (
+              SELECT array_agg(a.attname ORDER BY cols.ordinality)
+              FROM unnest(c.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
+              INNER JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = cols.attnum
+            ) = ARRAY['key', 'userId', 'method', 'path']
         `
       );
       expect(rows.length).toBe(1);
