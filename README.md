@@ -83,10 +83,137 @@ Single Complete Dispatch (1:1 Fulfillment, Decrements Physical & Reserved Quanti
 
 ---
 
-## 5. Database Design (12 Business Tables)
+## 5. Database Schema & Entity Relationship (ER) Diagram
 
-The database schema adheres strictly to the approved 12-table domain model:
+The system employs a fully normalized relational schema comprising exactly **12 business tables** with zero JSON workflow blobs:
 
+```mermaid
+erDiagram
+    users ||--o{ enquiries : "creates"
+    users ||--o{ quotations : "creates"
+    users ||--o{ sales_orders : "confirms"
+    users ||--o{ dispatches : "executes"
+
+    customers ||--o{ enquiries : "places"
+    customers ||--o{ quotations : "receives"
+    customers ||--o{ sales_orders : "orders"
+
+    products ||--|| inventories : "tracks"
+    products ||--o{ enquiry_items : "contains"
+    products ||--o{ quotation_items : "contains"
+    products ||--o{ sales_order_items : "contains"
+    products ||--o{ dispatch_items : "contains"
+
+    enquiries ||--o{ enquiry_items : "has"
+    enquiries ||--o{ quotations : "references"
+
+    quotations ||--o{ quotation_items : "has"
+    quotations ||--|| sales_orders : "converts to (1:1)"
+
+    sales_orders ||--o{ sales_order_items : "has"
+    sales_orders ||--|| dispatches : "fulfills (1:1)"
+
+    dispatches ||--o{ dispatch_items : "contains"
+
+    users {
+        string id PK
+        string email UK
+        string password
+        string fullName
+        enum role "ADMIN | SALES_USER"
+    }
+    customers {
+        string id PK
+        string companyName
+        string contactPerson
+        string mobile
+        string email
+        string city
+    }
+    products {
+        string id PK
+        string code UK
+        string name
+        string category
+        string unit
+        decimal basePrice
+    }
+    inventories {
+        string id PK
+        string productId FK,UK
+        int physicalQuantity
+        int reservedQuantity
+        int damagedQuantity
+    }
+    enquiries {
+        string id PK
+        string enquiryNumber UK
+        string customerId FK
+        datetime enquiryDate
+        datetime requiredDate
+        enum status "NEW | QUOTED | WON | LOST"
+        string createdById FK
+    }
+    enquiry_items {
+        string id PK
+        string enquiryId FK
+        string productId FK
+        int quantity
+    }
+    quotations {
+        string id PK
+        string quotationNumber UK
+        string enquiryId FK
+        string customerId FK
+        decimal grandTotal
+        enum status "DRAFT | SENT | ACCEPTED | REJECTED"
+        string createdById FK
+    }
+    quotation_items {
+        string id PK
+        string quotationId FK
+        string productId FK
+        int quantity
+        decimal unitPrice
+        decimal discountPct
+        decimal gstPct
+        decimal lineAmount
+    }
+    sales_orders {
+        string id PK
+        string orderNumber UK
+        string quotationId FK,UK
+        string customerId FK
+        decimal totalAmount
+        enum status "PENDING | CONFIRMED | DISPATCHED | CANCELLED"
+        string confirmedById FK
+    }
+    sales_order_items {
+        string id PK
+        string salesOrderId FK
+        string productId FK
+        int quantity
+        decimal unitPrice
+        decimal lineAmount
+    }
+    dispatches {
+        string id PK
+        string dispatchNumber UK
+        string salesOrderId FK,UK
+        datetime dispatchDate
+        string vehicleNumber
+        string driverName
+        string dispatchedById FK
+    }
+    dispatch_items {
+        string id PK
+        string dispatchId FK
+        string productId FK
+        int quantity
+    }
+```
+
+### Table Definitions:
 1. **`users`**: System accounts with bcrypt password hashes and roles (`ADMIN`, `SALES_USER`).
 2. **`customers`**: Client companies, primary contacts, phone, email, and city.
 3. **`products`**: Sellable catalog SKUs (`code` unique, `name`, `category`, `unit`, `base_price`).
@@ -161,11 +288,41 @@ To eliminate race conditions, double reservations, and deadlocks under simultane
 | **Cancel Sales Order (Release Stock)** | ✅ | ❌ *(HTTP 403)* |
 | **Execute Order Dispatch** | ✅ | ❌ *(HTTP 403)* |
 
-*Forbidden attempts by `SALES_USER` return standard HTTP 403 messages beginning with `Access denied: User role SALES_USER...`.*
+*Forbidden attempts by `SALES_USER` return standard HTTP 403 messages beginning with `Access denied: User role 'SALES_USER' is not authorized to access this resource`.*
 
 ---
 
-## 8. Local Setup & Execution Guide
+## 8. REST API Reference (Postman / Swagger Equivalent)
+
+A complete, exportable Postman Collection is provided in the repository root:
+[`fundsroom_erp_postman_collection.json`](fundsroom_erp_postman_collection.json).
+You can import this collection directly into Postman to execute all automated test scenarios.
+
+### API Endpoints Summary:
+
+| Method | Endpoint | Allowed Roles | Description | Request Body Highlights |
+|---|---|---|---|---|
+| `POST` | `/api/auth/login` | Public | Sign in & receive JWT | `{ "email": "admin@fundsroom.com", "password": "..." }` |
+| `GET` | `/api/auth/me` | Authenticated | Retrieve authenticated session | Header: `Bearer <token>` |
+| `GET` | `/api/customers` | Authenticated | List all registered customers | None |
+| `POST` | `/api/customers` | Authenticated | Create customer record | `{ "companyName", "contactPerson", "mobile", "email", "city" }` |
+| `GET` | `/api/products` | Authenticated | List catalog products with live stock | None |
+| `GET` | `/api/inventories` | Authenticated | List physical/reserved/available stock | None |
+| `GET` | `/api/enquiries` | Authenticated | List enquiries with items & status | None |
+| `POST` | `/api/enquiries` | Authenticated | Create multi-product enquiry | `{ "customerId", "requiredDate", "items": [{ "productId", "quantity" }] }` |
+| `GET` | `/api/quotations` | Authenticated | List quotations with calculations | None |
+| `POST` | `/api/quotations` | Authenticated | Issue quotation with pricing math | `{ "enquiryId", "validUntil", "items": [{ "productId", "quantity", "unitPrice", "discountPct", "gstPct" }] }` |
+| `PATCH` | `/api/quotations/:id/status` | Authenticated | Transition quotation status | `{ "status": "ACCEPTED" }` |
+| `POST` | `/api/quotations/:id/convert` | Authenticated | Convert ACCEPTED quote to SO (1:1) | None |
+| `GET` | `/api/sales-orders` | Authenticated | List orders with stock checks | None |
+| `POST` | `/api/sales-orders/:id/confirm` | **ADMIN** | Concurrency-safe reserve & confirm | None (`FOR UPDATE` locking applied) |
+| `PATCH` | `/api/sales-orders/:id/cancel` | **ADMIN** | Cancel order & release reserved stock | None |
+| `GET` | `/api/dispatches` | Authenticated | List order dispatches | None |
+| `POST` | `/api/dispatches` | **ADMIN** | Execute complete order fulfillment | `{ "salesOrderId", "vehicleNumber", "driverName" }` |
+
+---
+
+## 9. Local Setup & Execution Guide
 
 ### Prerequisites
 - Node.js 20 LTS or higher
@@ -232,7 +389,7 @@ npm run build
 
 ---
 
-## 9. Environment Variables Reference
+## 10. Environment Variables Reference
 
 ### Backend (`backend/.env`)
 | Variable | Description | Default / Example |
@@ -250,7 +407,7 @@ npm run build
 
 ---
 
-## 10. Demo Workflow & Evaluator Test Guide
+## 11. Demo Workflow & Evaluator Test Guide
 
 For rapid demonstration, two pre-configured seed accounts are available:
 
@@ -259,22 +416,49 @@ For rapid demonstration, two pre-configured seed accounts are available:
 | **Admin** | `admin@fundsroom.com` | `AdminPassword@123` | Full access (Confirmations, Cancellations, Dispatches) |
 | **Sales User** | `sales@fundsroom.com` | `SalesPassword@123` | Commercial workflow (Customers, Enquiries, Quotations, Conversions) |
 
-### End-to-End Walkthrough Scenario:
-1. **Sign In**: Log in as `sales@fundsroom.com` (use the quick-fill button on the login screen).
-2. **Create Customer**: Open **Customers** → click **Add Customer** → register a new client company.
-3. **Log Enquiry**: Open **Enquiries** → click **Create Enquiry** → select client and 2 products (e.g. 10 units each).
-4. **Issue Quotation**: Open **Quotations** → click **New Quotation** → choose the enquiry → observe live margin/tax calculation preview → submit.
-5. **Accept & Convert**: In **Quotations**, open the quotation → click **Mark ACCEPTED** → click **Convert to Sales Order**. Observe that the enquiry automatically transitions to `WON` and a new Sales Order is created.
-6. **Switch to Admin**: Click **Admin** on the demo role switcher in the sidebar.
-7. **Confirm & Reserve Stock**: Open **Sales Orders** → view the pending order → observe live inventory checks → click **Confirm & Reserve**. Observe that inventory `reserved_quantity` increases.
-8. **Complete Dispatch**: Open **Dispatches** → click **Process Dispatch** → select the confirmed order, enter vehicle and driver details → click **Confirm & Dispatch**. Observe that both `physical_quantity` and `reserved_quantity` decrement and the order transitions to `DISPATCHED`.
-9. **Test Cancellation**: Create a second order, confirm it, and click **Cancel**. Observe that reserved stock is immediately released back into the sellable pool.
+### 5-Minute Video Walkthrough Script:
+1. **0:00 - 0:45 | Login & Commercial Workflow**:
+   - Sign in as `sales@fundsroom.com` using the Quick Fill button.
+   - Open **Customers** → Add Customer (e.g. *Apex Heavy Engineering*).
+   - Open **Enquiries** → Create Enquiry for 2 industrial items (e.g., 10 Valves, 5 Pumps).
+2. **0:45 - 1:45 | Authoritative Quotation & Conversion**:
+   - Open **Quotations** → Click New Quotation against the enquiry.
+   - Set 5% discount and 18% GST → observe live preview with exact INR rounding.
+   - Click **Submit** → Open the quotation → Click **Mark ACCEPTED**.
+   - Click **Convert to Sales Order** → Notice enquiry is now `WON` and Sales Order is generated.
+3. **1:45 - 2:45 | Concurrency & Admin Order Confirmation**:
+   - Switch role to `admin@fundsroom.com` via demo switcher.
+   - Open **Sales Orders** → Click the pending order.
+   - Notice real-time stock availability check.
+   - Click **Confirm & Reserve Stock** → Inventory `reserved_quantity` increases; `physical_quantity` is untouched.
+4. **2:45 - 3:45 | Complete Dispatch Fulfillment**:
+   - Open **Dispatches** → Click **Process Dispatch**.
+   - Select the confirmed order, enter Vehicle Number (`MH-12-AB-9876`) and Driver Name (`Suresh Yadav`).
+   - Click **Confirm & Dispatch** → Both `physical_quantity` and `reserved_quantity` decrement atomically.
+5. **3:45 - 4:30 | Cancellation with Stock Release**:
+   - Create a second order, confirm it, then click **Cancel Order**.
+   - Observe that reserved inventory is immediately returned to the sellable pool.
 
 ---
 
-## 11. CI/CD Pipeline
+## 12. Automated Test Suite Mapping
 
-The project includes an automated GitHub Actions CI/CD workflow defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
+All mandatory test requirements and bonuses are automated in `backend/tests/integration/`:
+
+| Test # | Requirement | Implementation Test Suite | Result |
+|---|---|---|:---:|
+| **Test 1** | Quotation total is calculated correctly & prevents tampering | [`quotation-calculation.test.ts`](backend/tests/integration/quotation-calculation.test.ts) | **PASS** |
+| **Test 2** | Rejected/Draft quotation cannot create a Sales Order | [`quotation-conversion.test.ts`](backend/tests/integration/quotation-conversion.test.ts) | **PASS** |
+| **Test 3** | Same quotation cannot generate duplicate Sales Orders | [`duplicate-order.test.ts`](backend/tests/integration/duplicate-order.test.ts) | **PASS** |
+| **Test 4** | Cannot reserve more than available inventory | [`inventory-reservation.test.ts`](backend/tests/integration/inventory-reservation.test.ts) | **PASS** |
+| **Test 5** | Unauthorized user cannot perform restricted operation | [`rbac-authorization.test.ts`](backend/tests/integration/rbac-authorization.test.ts) | **PASS** |
+| **Bonus** | Concurrent simultaneous inventory reservations | [`concurrency-reservation.test.ts`](backend/tests/integration/concurrency-reservation.test.ts) | **PASS** |
+
+---
+
+## 13. CI/CD Pipeline
+
+The repository includes an automated GitHub Actions CI/CD workflow defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
 - **Triggers**: On every `push` and `pull_request` to `main`, plus manual `workflow_dispatch`.
 - **Database Isolation**: Spawns an isolated `postgres:17-alpine` service container.
 - **Backend Job**: Generates Prisma Client, deploys schema with `prisma db push`, seeds test data, compiles TypeScript with `tsc`, and executes the complete 28-test Jest suite.
@@ -283,7 +467,7 @@ The project includes an automated GitHub Actions CI/CD workflow defined in [`.gi
 
 ---
 
-## 12. Security Architecture
+## 14. Security Architecture
 
 1. **Password Security**: Passwords hashed with `bcryptjs` (salt rounds: 10).
 2. **Token Security**: Stateless JWTs signed with 24-hour expiration; Bearer tokens required on all protected endpoints.
@@ -293,7 +477,7 @@ The project includes an automated GitHub Actions CI/CD workflow defined in [`.gi
 
 ---
 
-## 13. Project Constraints & Assumptions
+## 15. Project Constraints & Assumptions
 
 - **1:1 Complete Dispatch**: Each sales order is fulfilled through a single, complete dispatch. Split or partial dispatches are intentionally out of scope for this case study.
 - **Terminal State Immobility**: Once an order reaches `DISPATCHED` or `CANCELLED`, no further state transitions or cancellations can be performed.

@@ -1,0 +1,408 @@
+{
+  "info": {
+    "_postman_id": "9f76a5b4-d75a-4b92-b883-2d9c02059cb1",
+    "name": "Fundsroom ERP API Collection",
+    "description": "Production-grade REST API Collection for Fundsroom ERP PERN Technical Case Study.\nWorkflow: Login -> Customers -> Enquiries -> Quotations -> Sales Orders -> Inventory Reservation -> Dispatch.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "customerId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "productId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "enquiryId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "quotationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "salesOrderId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Login as Admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.token) {",
+                  "    pm.collectionVariables.set('authToken', json.data.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@fundsroom.com\",\n  \"password\": \"AdminPassword@123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Login as Sales User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.token) {",
+                  "    pm.collectionVariables.set('authToken', json.data.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sales@fundsroom.com\",\n  \"password\": \"SalesPassword@123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Current Session (Auth Me)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Master Data & Inventory",
+      "item": [
+        {
+          "name": "List Customers",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/customers",
+              "host": ["{{baseUrl}}"],
+              "path": ["customers"]
+            }
+          }
+        },
+        {
+          "name": "Create Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.id) {",
+                  "    pm.collectionVariables.set('customerId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"Larsen Heavy Industries Ltd\",\n  \"contactPerson\": \"Karan Saxena\",\n  \"mobile\": \"+91 9876500112\",\n  \"email\": \"ksaxena@larsenheavy.com\",\n  \"city\": \"Chennai\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/customers",
+              "host": ["{{baseUrl}}"],
+              "path": ["customers"]
+            }
+          }
+        },
+        {
+          "name": "List Products",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.length > 0) {",
+                  "    pm.collectionVariables.set('productId', json.data[0].id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            }
+          }
+        },
+        {
+          "name": "List Inventory Availability",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventories",
+              "host": ["{{baseUrl}}"],
+              "path": ["inventories"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Commercial Workflow (Sales User)",
+      "item": [
+        {
+          "name": "Create Enquiry (Multi-Product)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.id) {",
+                  "    pm.collectionVariables.set('enquiryId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"requiredDate\": \"2026-10-15T00:00:00.000Z\",\n  \"notes\": \"Urgent refinery plant expansion requirement\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 15\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/enquiries",
+              "host": ["{{baseUrl}}"],
+              "path": ["enquiries"]
+            }
+          }
+        },
+        {
+          "name": "Create Quotation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.id) {",
+                  "    pm.collectionVariables.set('quotationId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enquiryId\": \"{{enquiryId}}\",\n  \"validUntil\": \"2026-10-30T00:00:00.000Z\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 15,\n      \"unitPrice\": 4500,\n      \"discountPct\": 5,\n      \"gstPct\": 18\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/quotations",
+              "host": ["{{baseUrl}}"],
+              "path": ["quotations"]
+            }
+          }
+        },
+        {
+          "name": "Accept Quotation",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ACCEPTED\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/quotations/{{quotationId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["quotations", "{{quotationId}}", "status"]
+            }
+          }
+        },
+        {
+          "name": "Convert Accepted Quotation to Sales Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success && json.data.id) {",
+                  "    pm.collectionVariables.set('salesOrderId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/quotations/{{quotationId}}/convert",
+              "host": ["{{baseUrl}}"],
+              "path": ["quotations", "{{quotationId}}", "convert"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Order Fulfillment & Dispatch (Admin Only)",
+      "item": [
+        {
+          "name": "List Sales Orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/sales-orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["sales-orders"]
+            }
+          }
+        },
+        {
+          "name": "Confirm Sales Order & Reserve Inventory (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/sales-orders/{{salesOrderId}}/confirm",
+              "host": ["{{baseUrl}}"],
+              "path": ["sales-orders", "{{salesOrderId}}", "confirm"]
+            }
+          }
+        },
+        {
+          "name": "Process Dispatch (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"salesOrderId\": \"{{salesOrderId}}\",\n  \"vehicleNumber\": \"MH-12-AB-9876\",\n  \"driverName\": \"Suresh Yadav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/dispatches",
+              "host": ["{{baseUrl}}"],
+              "path": ["dispatches"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Sales Order (Releases Stock)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/sales-orders/{{salesOrderId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["sales-orders", "{{salesOrderId}}", "cancel"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
