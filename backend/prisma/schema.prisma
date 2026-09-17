@@ -271,7 +271,7 @@ model IdempotencyKey {
   createdAt      DateTime          @default(now())
   expiresAt      DateTime
 
-  @@unique([key, userId, method, path])
-  @@index([expiresAt])
+  @@unique([key, userId, method, path], map: "idempotency_keys_unique")
+  @@index([expiresAt], map: "idempotency_keys_expiresAt_idx")
   @@map("idempotency_keys")
 }
