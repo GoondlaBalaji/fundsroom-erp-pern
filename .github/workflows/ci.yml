@@ -54,9 +54,9 @@ jobs:
         working-directory: backend
         run: npx prisma generate
 
-      - name: Push Prisma schema to CI database
+      - name: Apply database migrations to CI database
         working-directory: backend
-        run: npx prisma db push
+        run: npx prisma migrate deploy
 
       - name: Seed CI database with master data
         working-directory: backend
