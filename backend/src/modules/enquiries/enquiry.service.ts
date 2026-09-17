@@ -1,6 +1,7 @@
 import prisma from '../../config/prisma';
 import { EnquiryStatus } from '@prisma/client';
 import { NotFoundError, ValidationError } from '../../utils/errors';
+import { nextSequence, todayKey } from '../../utils/sequence';
 
 export interface CreateEnquiryItemDTO {
   productId: string;
@@ -84,20 +85,13 @@ export class EnquiryService {
       throw new ValidationError('One or more selected products are invalid or do not exist');
     }
 
-    // 3. Generate unique enquiry number: ENQ-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await prisma.enquiry.count({
-      where: {
-        enquiryNumber: {
-          startsWith: `ENQ-${dateStr}`,
-        },
-      },
-    });
-    const seq = String(countToday + 1).padStart(4, '0');
-    const enquiryNumber = `ENQ-${dateStr}-${seq}`;
-
-    // 4. Create enquiry + items transactionally
+    // 3. Create enquiry + items transactionally with atomic sequence number
     return prisma.$transaction(async (tx) => {
+      // BUG-08 FIX: Atomic sequence allocation inside the transaction
+      const dateStr = todayKey();
+      const seq = await nextSequence(tx, 'ENQ', dateStr);
+      const enquiryNumber = `ENQ-${dateStr}-${seq}`;
+
       return tx.enquiry.create({
         data: {
           enquiryNumber,

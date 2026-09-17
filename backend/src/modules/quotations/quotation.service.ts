@@ -2,6 +2,7 @@ import prisma from '../../config/prisma';
 import { QuotationStatus, SalesOrderStatus, EnquiryStatus } from '@prisma/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../utils/errors';
 import { calculateQuotationTotals, CalculationItemInput } from '../../utils/calculator';
+import { nextSequence, todayKey } from '../../utils/sequence';
 
 export interface CreateQuotationItemDTO extends CalculationItemInput {
   clientLineAmount?: number;
@@ -67,7 +68,7 @@ export class QuotationService {
   }
 
   static async create(data: CreateQuotationDTO, userId: string) {
-    // 1. Fetch enquiry to link customer
+    // 1. Fetch enquiry to link customer and validate status
     const enquiry = await prisma.enquiry.findUnique({
       where: { id: data.enquiryId },
       include: { customer: true },
@@ -75,6 +76,22 @@ export class QuotationService {
 
     if (!enquiry) {
       throw new NotFoundError(`Enquiry with ID ${data.enquiryId} not found`);
+    }
+
+    // BUG-06 FIX: Block quotation creation for LOST or WON enquiries.
+    // LOST: The commercial opportunity is closed — no new quotation is meaningful.
+    // WON: The enquiry has already been converted to a Sales Order via the accepted quotation.
+    //      Creating a new quotation on a WON enquiry would bypass the audit trail and allow
+    //      a second conversion path, which is a workflow integrity violation.
+    if (enquiry.status === EnquiryStatus.LOST) {
+      throw new ValidationError(
+        `Cannot generate quotation for an enquiry with status 'LOST'`
+      );
+    }
+    if (enquiry.status === EnquiryStatus.WON) {
+      throw new ValidationError(
+        `Cannot generate quotation for an enquiry with status 'WON'. The enquiry has already been converted to a Sales Order.`
+      );
     }
 
     // 2. Authoritative backend calculation
@@ -87,20 +104,13 @@ export class QuotationService {
       );
     }
 
-    // 3. Generate unique quotation number: QTN-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await prisma.quotation.count({
-      where: {
-        quotationNumber: {
-          startsWith: `QTN-${dateStr}`,
-        },
-      },
-    });
-    const seq = String(countToday + 1).padStart(4, '0');
-    const quotationNumber = `QTN-${dateStr}-${seq}`;
-
-    // 4. Save quotation and items transactionally
+    // 3. Save quotation and items transactionally with atomic sequence number
     return prisma.$transaction(async (tx) => {
+      // BUG-08 FIX: Atomic sequence allocation inside the transaction
+      const dateStr = todayKey();
+      const seq = await nextSequence(tx, 'QTN', dateStr);
+      const quotationNumber = `QTN-${dateStr}-${seq}`;
+
       const quotation = await tx.quotation.create({
         data: {
           quotationNumber,
@@ -185,9 +195,15 @@ export class QuotationService {
 
   static async convertToSalesOrder(id: string, _userId: string) {
     return prisma.$transaction(async (tx) => {
-      // 1. Lock quotation row using row-level locking
-      const lockedQuotations: { id: string; status: QuotationStatus; quotation_number: string }[] = await tx.$queryRawUnsafe(
-        `SELECT id, status, quotation_number FROM quotations WHERE id = $1 FOR UPDATE`,
+      // 1. Lock quotation row AND fetch valid_until in the same raw query
+      const lockedQuotations: {
+        id: string;
+        status: QuotationStatus;
+        quotation_number: string;
+        valid_until: Date;
+        enquiry_id: string;
+      }[] = await tx.$queryRawUnsafe(
+        `SELECT id, status, quotation_number, valid_until, enquiry_id FROM quotations WHERE id = $1 FOR UPDATE`,
         id
       );
 
@@ -201,6 +217,17 @@ export class QuotationService {
       if (lockedQuotation.status !== QuotationStatus.ACCEPTED) {
         throw new ValidationError(
           `Cannot convert quotation to Sales Order. Quotation must be in ACCEPTED status, but is currently '${lockedQuotation.status}'.`
+        );
+      }
+
+      // BUG-04 FIX: Check expiry against the locked row's valid_until.
+      // Using new Date() here is safe because valid_until is a past/future boundary check,
+      // not an equality comparison, and is checked against the authoritative DB value under lock.
+      const now = new Date();
+      const validUntil = new Date(lockedQuotation.valid_until);
+      if (now > validUntil) {
+        throw new ValidationError(
+          `Cannot convert quotation to Sales Order. The quotation expired on ${validUntil.toISOString().slice(0, 10)} and is no longer valid.`
         );
       }
 
@@ -227,16 +254,9 @@ export class QuotationService {
         throw new NotFoundError(`Quotation with ID ${id} not found`);
       }
 
-      // 5. Generate unique Sales Order number: SO-YYYYMMDD-XXXX
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const countToday = await tx.salesOrder.count({
-        where: {
-          orderNumber: {
-            startsWith: `SO-${dateStr}`,
-          },
-        },
-      });
-      const seq = String(countToday + 1).padStart(4, '0');
+      // 5. BUG-08 FIX: Generate unique Sales Order number atomically
+      const dateStr = todayKey();
+      const seq = await nextSequence(tx, 'SO', dateStr);
       const orderNumber = `SO-${dateStr}-${seq}`;
 
       const salesOrder = await tx.salesOrder.create({

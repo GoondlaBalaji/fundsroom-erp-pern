@@ -1,6 +1,7 @@
 import prisma from '../../config/prisma';
 import { SalesOrderStatus } from '@prisma/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../utils/errors';
+import { nextSequence, todayKey } from '../../utils/sequence';
 
 interface LockedInventoryRow {
   id: string;
@@ -174,16 +175,9 @@ export class DispatchService {
         });
       }
 
-      // 6. Generate unique dispatch number: DSP-YYYYMMDD-XXXX
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const countToday = await tx.dispatch.count({
-        where: {
-          dispatchNumber: {
-            startsWith: `DSP-${dateStr}`,
-          },
-        },
-      });
-      const seq = String(countToday + 1).padStart(4, '0');
+      // 6. BUG-08 FIX: Generate unique dispatch number atomically
+      const dateStr = todayKey();
+      const seq = await nextSequence(tx, 'DSP', dateStr);
       const dispatchNumber = `DSP-${dateStr}-${seq}`;
 
       // 7. Create Dispatch record and line items

@@ -238,3 +238,14 @@ model DispatchItem {
 
   @@map("dispatch_items")
 }
+
+/// Atomic daily sequence counter for concurrency-safe business number generation.
+/// Use nextSequence() utility to allocate numbers instead of count() + 1.
+model DocumentSequence {
+  docType String @map("doc_type") @db.VarChar(10)
+  dateKey String @map("date_key") @db.Char(8)
+  lastSeq Int    @default(0) @map("last_seq")
+
+  @@id([docType, dateKey])
+  @@map("document_sequences")
+}

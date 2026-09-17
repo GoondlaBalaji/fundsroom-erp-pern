@@ -15,7 +15,21 @@ export const createEnquirySchema = z.object({
           quantity: z.number().int().positive('Quantity must be a positive whole number'),
         })
       )
-      .min(1, 'At least one product item is required'),
+      .min(1, 'At least one product item is required')
+      // BUG-07 FIX: Reject duplicate product IDs at the validation boundary
+      .superRefine((items, ctx) => {
+        const seen = new Set<string>();
+        for (const item of items) {
+          if (seen.has(item.productId)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Duplicate products in enquiry line items are not allowed',
+            });
+            return;
+          }
+          seen.add(item.productId);
+        }
+      }),
   }),
 });
 
