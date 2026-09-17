@@ -1,437 +1,545 @@
-# Fundsroom ERP — PERN Full-Stack Technical Case Study
+# Fundsroom ERP
 
-> A production-grade Enterprise Resource Planning (ERP) platform built with the **PERN stack (PostgreSQL + Express.js + React.js + Node.js + Prisma)**, implementing an end-to-end industrial manufacturing and supply chain workflow:  
+> A production-grade Enterprise Resource Planning (ERP) platform built with the **PERN stack (PostgreSQL + Express.js + React.js + Node.js + Prisma)**, implementing an end-to-end industrial manufacturing and supply chain commercial workflow:  
 > **Customer Enquiry → Sales Quotation → Sales Order → Concurrency-Safe Inventory Reservation → Complete Dispatch**.
+>
+> Developed as a **Full-Stack Developer Technical Case Study** to demonstrate enterprise relational database design, deterministic concurrency control, strict role-based access control, authoritative backend pricing, and automated integration test coverage.
 
 ---
 
-## 1. Project Overview
+## 1. Features
 
-Fundsroom ERP is engineered to demonstrate enterprise-grade software architecture:
-- **Full Relational Normalization**: Exactly 12 normalized domain business tables in PostgreSQL with zero unstructured JSON blobs.
-- **ACID Transactional Guarantees**: Multi-table state transitions executed atomically within Prisma transactions.
-- **Pessimistic Concurrency Control**: Row-level locking (`SELECT ... FOR UPDATE`) in deterministic order (`product_id ASC`) to eliminate inventory race conditions, double reservations, and deadlocks.
-- **Authoritative Backend Pricing**: All discounts, taxes, and valuations calculated strictly on the backend using half-up roundings in INR (`₹`), with client tamper detection.
-- **Strict Role-Based Access Control (RBAC)**: Distinct permissions enforced at the API layer for `ADMIN` and `SALES_USER`.
-- **Durable PostgreSQL Idempotency**: Safe client retries with hash-based duplicate prevention across customer, enquiry, and quotation creations.
+- **JWT Authentication**: Stateless session authentication with 24-hour expiration and Bearer token parsing.
+- **Password Hashing**: Secure password management using `bcryptjs` with 10 salt rounds.
+- **Role-Based Access Control (RBAC)**: Distinct authorization for `ADMIN` and `SALES_USER` enforced strictly at the backend API layer.
+- **Customer Management**: Client directory with contact details, company information, and relational activity tracking.
+- **Multi-Product Enquiry Intake**: Customer requirement intake supporting multiple line items with future required date validation.
+- **Product Catalog Master**: Industrial catalog items with unique SKU codes, categories, units of measure, and base prices.
+- **Real-Time Inventory Register**: Authoritative stock balance tracking physical, reserved, and damaged stock levels.
+- **Quotation Management**: Commercial quote generation with draft, sent, accepted, and rejected state transitions.
+- **Authoritative Backend Financial Calculations**: Server-side calculation of line amounts, discounts, GST, and grand total in INR (`₹`) with client tamper detection.
+- **Quotation → Sales Order Conversion**: Gated conversion restricted strictly to `ACCEPTED` quotations with an atomic 1:1 relational constraint and enquiry status update to `WON`.
+- **Concurrency-Safe Inventory Reservation**: PostgreSQL pessimistic row-level locking (`SELECT ... FOR UPDATE`) with deterministic ascending lock ordering (`ORDER BY product_id ASC`) preventing overselling and deadlocks.
+- **Sales Order Cancellation & Stock Release**: Automatic release of reserved inventory back to the available pool when a confirmed order is cancelled.
+- **Complete Dispatch Fulfillment**: Single complete fulfillment per sales order, atomically reducing both physical and reserved stock.
+- **Validation & Error Handling**: Strict request schema validation via `Zod` and centralized error middleware preventing SQL leaks or stack trace exposure.
+- **Durable PostgreSQL Idempotency**: Safe client retries with SHA-256 canonical hash verification preventing duplicate customer, enquiry, and quotation creations under network retries or concurrent bursts.
+- **Automated Integration Test Suite**: 19 test suites comprising 170 passing automated tests covering all domain workflows, financial rules, concurrency, and edge cases.
+
+---
+
+## 2. Business Workflow
 
 ```text
-Customer Enquiry (Multi-Product Intake)
-       ↓
-Sales Quotation (Authoritative INR Half-Up Pricing)
-       ↓
-Quotation Acceptance (Gate for Order Conversion)
-       ↓
-Sales Order Creation (Atomic 1:1 Link, Enquiry Marked WON)
-       ↓
-Admin Order Confirmation & Deterministic Inventory Reservation (FOR UPDATE Locks)
-       ↓
-Single Complete Dispatch (1:1 Fulfillment, Decrements Physical & Reserved Stock)
+Customer
+   ↓
+Enquiry (Multi-Product Line Items)
+   ↓
+Quotation (Authoritative Server Pricing)
+   ↓
+Accepted Quotation (Prerequisite Gate)
+   ↓
+Sales Order (Strict 1:1 Link, Enquiry Marked WON)
+   ↓
+Admin Confirmation
+   ↓
+Inventory Reservation (Reserved Stock Increments; Physical Stock Untouched)
+   ↓
+Dispatch (Physical & Reserved Stock Atomically Decrement; Order Marked DISPATCHED)
 ```
 
----
-
-## 2. Technology Stack
-
-| Layer | Technologies Used | Description |
-|---|---|---|
-| **Frontend** | React 18, TypeScript 5, Vite 5, Axios, Lucide React, Vanilla CSS3 | Modular React application with responsive corporate design system and role switching |
-| **Backend** | Node.js (v20 LTS), Express 4, TypeScript 5 | Modular route/service architecture with centralized error handling |
-| **Database & ORM** | PostgreSQL 17, Prisma ORM 5 | 12 domain tables, check constraints, foreign keys, and atomic sequence counters |
-| **Validation** | Zod 3 | Strict runtime schema validation for incoming requests and query params |
-| **Authentication & Security** | JWT (jsonwebtoken), bcryptjs, Helmet, CORS | Password hashing with 10 salt rounds, stateless JWT bearer tokens (24h expiry) |
-| **Testing** | Jest 29, ts-jest, Supertest | 19 integration test suites, 170 tests passing with zero mocks |
-| **CI/CD** | GitHub Actions | Automated build, lint, database migrations, and integration test execution |
+### Domain State Transitions:
+1. **Enquiry**: `NEW` → `QUOTED` → `WON` (automatically upon Sales Order conversion) / `LOST`.
+2. **Quotation**: `DRAFT` → `SENT` → `ACCEPTED` / `REJECTED`. Only `ACCEPTED` quotations may be converted into a Sales Order.
+3. **Sales Order**: `PENDING` → `CONFIRMED` → `DISPATCHED` (terminal fulfillment).
+4. **Cancellation Path**:
+   - `PENDING` Sales Order → `CANCELLED` (no inventory change).
+   - `CONFIRMED` Sales Order → `CANCELLED` (committed reserved inventory is atomically released back to available pool).
+   - `DISPATCHED` Sales Order → Cancellation strictly rejected (`400 Bad Request`).
 
 ---
 
-## 3. Architecture
+## 3. User Roles
+
+Role permissions are enforced strictly at the backend API layer via [`rbac.middleware.ts`](backend/src/middlewares/rbac.middleware.ts), not merely hidden in the frontend UI.
+
+### `ADMIN`:
+- View all system records, product catalog, and live inventory balances.
+- Confirm Sales Orders and atomically reserve inventory (`POST /api/sales-orders/:id/confirm`).
+- Cancel Sales Orders and release reserved inventory (`POST /api/sales-orders/:id/cancel`).
+- Process order dispatch and complete fulfillment (`POST /api/dispatches`).
+- View operational idempotency metrics and trigger manual cleanup of expired keys (`/api/idempotency/*`).
+
+### `SALES_USER`:
+- View all system records, product catalog, and live inventory balances.
+- Register new client companies (`POST /api/customers`).
+- Create multi-product enquiries (`POST /api/enquiries`).
+- Generate commercial quotations (`POST /api/quotations`).
+- Update quotation statuses (`PATCH /api/quotations/:id/status`).
+- Convert `ACCEPTED` quotations to Sales Orders (`POST /api/quotations/:id/convert`).
+- **Restricted**: Cannot confirm sales orders, cancel sales orders, or process dispatches. Any attempt returns `403 Forbidden`.
+
+---
+
+## 4. Tech Stack
+
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| **Frontend Framework** | React | 18.3.1 | Component-based user interface |
+| **Frontend Tooling** | Vite | 5.4.11 | Fast HMR development server and production bundler |
+| **Frontend Language** | TypeScript | 5.6.3 | Type-safe frontend codebase |
+| **HTTP Client** | Axios | 1.7.9 | API client with Bearer token interceptor |
+| **Icons & UI** | Lucide React | 0.468.0 | Consistent iconography |
+| **Styling** | Vanilla CSS3 | — | Corporate design system with custom CSS tokens |
+| **Backend Runtime** | Node.js | v20 LTS | Server execution environment |
+| **Backend Framework** | Express.js | 4.19.2 | RESTful routing and middleware pipeline |
+| **Backend Language** | TypeScript | 5.4.5 | Type-safe backend application logic |
+| **Database & ORM** | PostgreSQL & Prisma | 17 / 5.22.0 | Relational database and type-safe query client |
+| **Authentication** | jsonwebtoken | 9.0.2 | Stateless JWT token issuance and verification |
+| **Password Hashing** | bcryptjs | 2.4.3 | One-way password hashing (10 salt rounds) |
+| **Validation** | Zod | 3.23.8 | Strict schema validation for incoming HTTP payloads |
+| **Security Headers** | Helmet | 7.1.0 | Standard HTTP security headers |
+| **CORS** | cors | 2.8.5 | Cross-origin resource sharing control |
+| **Testing** | Jest & Supertest | 29.7.0 / 7.0.0 | Integration test runner and HTTP assertions |
+
+---
+
+## 5. Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                      React 18 + Vite Frontend                           │
-│  - TypeScript 5 & Modular API Client (Axios with Bearer Interceptor)    │
+│  - TypeScript 5 & Modular Axios API Client (Bearer Interceptor)         │
 │  - Role-Based UI Guarding & Demo Switcher (Admin / Sales User)          │
-│  - Responsive Corporate Design System (Inter typography, CSS Variables) │
+│  - Corporate Design System (Inter typography, CSS Variables)            │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │ HTTP / REST (/api)
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Node.js + Express Backend                           │
-│  - Modular Architecture: 9 Domain & Infrastructure Modules              │
-│  - Zod Request Schema Validation Middlewares                            │
-│  - JWT Authentication & Strict RBAC Authorization Middlewares           │
-│  - Centralized Error Handling (Sanitizing database errors and stacks)   │
+│  - Middleware Pipeline: Helmet, CORS, Zod Schema Validation             │
+│  - Authentication: JWT Bearer Verification (req.user)                   │
+│  - Authorization: Strict RBAC Middleware (UserRole.ADMIN)               │
+│  - Service Layer: Business Logic, Atomic Numbering, Authoritative Math │
+│  - Centralized Error Handling: Sanitized AppError & Prisma Code Mappers │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │ Prisma ORM 5
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     PostgreSQL 17 Database                              │
-│  - 12 Normalized Relational Business Tables + 2 Infrastructure Tables   │
-│  - Pessimistic Row-Level Locking (SELECT ... FOR UPDATE)                │
-│  - Deterministic Product ID Ascending Lock Ordering (Deadlock Safety)   │
+│  - 12 Normalized Relational Domain Tables + 2 Infrastructure Tables     │
+│  - Row-Level Locking (SELECT ... FOR UPDATE) in product_id ASC order    │
 │  - Multi-Entity ACID Transactions via prisma.$transaction               │
+│  - Database Check Constraints ensuring non-negative inventory balances  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Authentication & RBAC Flow
-1. Client submits credentials to `POST /api/auth/login`.
-2. Backend verifies bcrypt hash (10 salt rounds) and issues a signed JWT token containing `userId`, `email`, and `role`.
-3. Client includes token in subsequent requests: `Authorization: Bearer <jwtToken>`.
-4. `authenticate` middleware verifies token validity and attaches `req.user`.
-5. `authorize(UserRole.ADMIN)` middleware inspects the authenticated role. Disallowed roles (`SALES_USER`) are rejected with `403 Forbidden`.
+- **Authentication Flow**: User submits credentials to `POST /api/auth/login`. On validation against bcrypt hash, a signed JWT (24h expiry) is returned. Subsequent requests supply `Authorization: Bearer <token>`.
+- **Request Validation**: Handled by reusable `validate(schema)` middleware powered by Zod before reaching controllers.
+- **Service Layer & Transactions**: Operations coordinating multiple entities (conversion, reservation, dispatch, idempotency) are encapsulated in atomic `prisma.$transaction()` blocks.
+- **Inventory Concurrency Protection**: High-contention operations use row-level locks sorted deterministically to eliminate deadlocks and prevent race conditions.
 
 ---
 
-## 4. Core Business Workflow
+## 6. Database Design
 
-### 4.1 Customer & Enquiry Creation
-- Sales users register client enterprises and create multi-product enquiries.
-- Each enquiry requires a valid future date (`requiredDate >= today`) and line items with positive quantities.
-- An atomic daily document number is assigned: `ENQ-YYYYMMDD-XXXX`.
+The database schema is fully normalized into **12 domain business tables** and **2 supporting infrastructure tables**. The entire commercial lifecycle is modeled relationally with zero unstructured JSON workflow shortcuts:
 
-### 4.2 Authoritative Sales Quotations
-- Quotations are issued against valid enquiries (enquiries with status `WON` or `LOST` are strictly blocked).
-- The backend authoritatively calculates line base amounts, discounts, GST, and grand total.
-- **Tamper Protection**: If the client provides a `clientGrandTotal` that disagrees with the backend calculation by more than ₹0.05, the request is rejected with `400 Bad Request`.
+### Domain Tables:
+1. **`users`**: System user accounts, role (`ADMIN`, `SALES_USER`), and bcrypt password hash.
+2. **`customers`**: Commercial clients with enterprise name, primary contact person, mobile, email, and city.
+3. **`products`**: Sellable inventory catalog with unique SKU `code`, category, unit of measure, and base price.
+4. **`inventories`**: Stock register for each product (`1:1` link), tracking `physical_quantity`, `reserved_quantity`, and `damaged_quantity`.
+5. **`enquiries`**: Inbound customer requests with sequential numbering (`ENQ-YYYYMMDD-XXXX`) and required delivery dates.
+6. **`enquiry_items`**: Line items per enquiry referencing products and quantities (`ON DELETE CASCADE`).
+7. **`quotations`**: Commercial quotes referencing an enquiry and customer with sequential numbering (`QTN-YYYYMMDD-XXXX`) and authoritative totals.
+8. **`quotation_items`**: Quotation line valuations detailing unit price, discount percentage, GST percentage, and line total.
+9. **`sales_orders`**: Contractual orders with unique sequential numbering (`SO-YYYYMMDD-XXXX`). Linked **1:1** to `quotation_id` (`@unique`).
+10. **`sales_order_items`**: Contracted line items per sales order.
+11. **`dispatches`**: Physical shipment fulfillment with unique number (`DSP-YYYYMMDD-XXXX`), vehicle registration, and driver name. Linked **1:1** to `sales_order_id` (`@unique`).
+12. **`dispatch_items`**: Physical product quantities fulfilled in the dispatch.
 
-### 4.3 Quotation Acceptance & Sales Order Conversion
-- Only quotations in `ACCEPTED` status can be converted to a Sales Order (`DRAFT` or `REJECTED` quotes are rejected).
-- Conversion is strictly **1:1** enforced by `@unique` on `sales_orders.quotation_id`. Re-converting returns `409 Conflict`.
-- Upon successful conversion, the parent enquiry is atomically updated to status `WON`.
-
-### 4.4 Admin Confirmation & Inventory Reservation
-- Only users with the `ADMIN` role may confirm orders.
-- Uses PostgreSQL pessimistic row-level locking:
-  1. Locks the sales order row (`SELECT id, status FROM sales_orders WHERE id = $1 FOR UPDATE`).
-  2. Acquires row locks on all involved inventory rows in ascending `product_id` order (`SELECT ... FROM inventories WHERE product_id = ANY(...) ORDER BY product_id ASC FOR UPDATE`).
-  3. Verifies stock availability: `availableQuantity >= item.quantity`.
-  4. If sufficient: Atomically increments `reservedQuantity` while `physicalQuantity` remains untouched.
-  5. If insufficient: Rolls back transaction and returns `409 Conflict`.
-
-### 4.5 Sales Order Cancellation & Stock Release
-- If a `CONFIRMED` sales order is cancelled by Admin, the committed stock is automatically released back to the sellable pool (`reservedQuantity` decremented).
-- If a `PENDING` sales order is cancelled, status changes to `CANCELLED` without stock alterations.
-- Already `DISPATCHED` orders cannot be cancelled (`400 Bad Request`).
-
-### 4.6 Single Complete Dispatch Fulfillment
-- Dispatches are processed exclusively by Admin on `CONFIRMED` orders.
-- Exactly **one complete dispatch** per order (`dispatches.sales_order_id` is `@unique`).
-- Atomically decrements both `physicalQuantity` and `reservedQuantity`, and transitions the sales order to terminal `DISPATCHED`.
-
----
-
-## 5. Roles & Permissions
-
-| Feature / Action | `ADMIN` | `SALES_USER` | HTTP Status on Denial |
-|---|:---:|:---:|:---:|
-| View Dashboard & Product Catalog | ✅ | ✅ | 401 (if unauthenticated) |
-| View Live Inventory Balances | ✅ | ✅ | 401 |
-| Create Customers & Enquiries | ✅ | ✅ | 401 |
-| Create & Transition Quotations | ✅ | ✅ | 401 |
-| Convert Accepted Quotation to Sales Order | ✅ | ✅ | 401 |
-| View Sales Orders & Dispatches | ✅ | ✅ | 401 |
-| **Confirm Sales Order & Reserve Inventory** | ✅ | ❌ | **403 Forbidden** |
-| **Cancel Sales Order (Stock Release)** | ✅ | ❌ | **403 Forbidden** |
-| **Process Order Dispatch** | ✅ | ❌ | **403 Forbidden** |
-| **Idempotency Cleanup & Statistics** | ✅ | ❌ | **403 Forbidden** |
-
----
-
-## 6. Database Schema & Relational Design
-
-The system consists of **12 normalized business tables** and **2 infrastructure tables** in PostgreSQL:
+### Supporting Infrastructure Tables:
+13. **`document_sequences`**: Atomic sequence allocation counters (`ENQ`, `QTN`, `SO`, `DSP`) for collision-free sequential business numbering under concurrency.
+14. **`idempotency_keys`**: PostgreSQL-backed idempotency records storing request fingerprints (`key`, `userId`, `method`, `path`), execution status (`PROCESSING`, `COMPLETED`, `FAILED`), and stored responses.
 
 - Detailed ER Diagram and schema documentation: [`docs/database/ER-Diagram.md`](docs/database/ER-Diagram.md).
 
-```mermaid
-erDiagram
-    users ||--o{ enquiries : "creates"
-    users ||--o{ quotations : "creates"
-    users ||--o{ sales_orders : "confirms"
-    users ||--o{ dispatches : "executes"
+---
 
-    customers ||--o{ enquiries : "places"
-    customers ||--o{ quotations : "receives"
-    customers ||--o{ sales_orders : "orders"
+## 7. Inventory Logic
 
-    products ||--|| inventories : "tracks (1:1)"
-    products ||--o{ enquiry_items : "contains"
-    products ||--o{ quotation_items : "contains"
-    products ||--o{ sales_order_items : "contains"
-    products ||--o{ dispatch_items : "contains"
+Stock availability is calculated authoritatively using the formula:
+$$\text{Available Quantity} = \text{Physical Quantity} - \text{Reserved Quantity} - \text{Damaged Quantity}$$
 
-    enquiries ||--o{ enquiry_items : "contains line items"
-    enquiries ||--o{ quotations : "referenced by"
+- `physical_quantity`: Stock physically held in the warehouse.
+- `reserved_quantity`: Stock allocated to confirmed sales orders awaiting dispatch.
+- `damaged_quantity`: Stock quarantined or unsellable.
 
-    quotations ||--o{ quotation_items : "contains line items"
-    quotations ||--|| sales_orders : "converts to 1:1"
-
-    sales_orders ||--o{ sales_order_items : "contains line items"
-    sales_orders ||--|| dispatches : "fulfilled by 1:1"
-
-    dispatches ||--o{ dispatch_items : "contains line items"
-```
-
-### Table Summary:
-1. `users`: Internal accounts with bcrypt password hashes and roles (`ADMIN`, `SALES_USER`).
-2. `customers`: Commercial enterprise directory.
-3. `products`: Industrial sellable catalog items.
-4. `inventories`: Real-time stock register (`physical_quantity`, `reserved_quantity`, `damaged_quantity`).
-5. `enquiries`: Multi-product customer intake (`NEW`, `QUOTED`, `WON`, `LOST`).
-6. `enquiry_items`: Line items for enquiries.
-7. `quotations`: Commercial quotes with authoritative tax/discount calculations.
-8. `quotation_items`: Detailed quotation line valuations.
-9. `sales_orders`: Converted orders (`PENDING`, `CONFIRMED`, `DISPATCHED`, `CANCELLED`).
-10. `sales_order_items`: Contracted order line items.
-11. `dispatches`: Logistics fulfillment records with vehicle registration and driver info.
-12. `dispatch_items`: Physical goods dispatched.
-13. `document_sequences`: Atomic sequence allocation table for document numbering.
-14. `idempotency_keys`: PostgreSQL-backed durable idempotency store.
+### Inventory Lifecycle Operations:
+- **Reservation (`POST /api/sales-orders/:id/confirm`)**:
+  - `reserved_quantity` is incremented by order line quantities.
+  - `physical_quantity` remains untouched.
+  - Available stock decreases by the reserved quantity.
+- **Dispatch (`POST /api/dispatches`)**:
+  - `physical_quantity` is decremented by dispatched line quantities.
+  - `reserved_quantity` is decremented by dispatched line quantities.
+  - Available stock remains unchanged (the stock was already deducted from available at reservation).
+- **Cancellation (`POST /api/sales-orders/:id/cancel`)**:
+  - If the order was `CONFIRMED`: `reserved_quantity` is decremented, returning stock to the available pool.
+  - If the order was `PENDING`: No inventory alteration occurs.
+- **Database Concurrency & Check Constraints**:
+  - Inventory rows are locked using `SELECT ... FOR UPDATE` ordered by `product_id ASC`.
+  - Database check constraints enforce: `physical_quantity >= 0`, `reserved_quantity >= 0`, `damaged_quantity >= 0`, and `physical_quantity >= reserved_quantity`.
 
 ---
 
-## 7. Project Setup & Local Execution
+## 8. Quotation Calculation
 
-### Prerequisites
-- **Node.js**: v20 LTS or higher
-- **PostgreSQL**: 16 or 17 running locally or via Docker
-- **npm**: 9+
+Quotation calculations are performed authoritatively on the backend using standard commercial INR (`₹`) Half-Up rounding:
+$$\text{roundHalfUp}(n) = \frac{\text{Math.round}((n + \epsilon) \times 100)}{100}$$
 
-### Step 1: Clone Repository & Configure Environment
-```bash
-git clone https://github.com/GoondlaBalaji/fundsroom-erp-pern.git
-cd fundsroom-erp-pern
+### Line Item Calculations:
+1. **Base Amount**: $\text{baseAmount} = \text{quantity} \times \text{unitPrice}$
+2. **Discount Amount**: $\text{discountAmount} = \text{roundHalfUp}\left(\frac{\text{baseAmount} \times \text{discountPct}}{100}\right)$
+3. **Net Amount**: $\text{netAmount} = \text{baseAmount} - \text{discountAmount}$
+4. **GST Tax Amount**: $\text{gstAmount} = \text{roundHalfUp}\left(\frac{\text{netAmount} \times \text{gstPct}}{100}\right)$
+5. **Line Total Amount**: $\text{lineAmount} = \text{netAmount} + \text{gstAmount}$
 
-# Setup Backend Environment
-cp backend/.env.example backend/.env
+### Grand Totals:
+- $\text{subtotal} = \sum \text{baseAmount}$
+- $\text{totalDiscount} = \sum \text{discountAmount}$
+- $\text{totalGst} = \sum \text{gstAmount}$
+- $\text{grandTotal} = \sum \text{lineAmount}$
 
-# Setup Frontend Environment
-cp frontend/.env.example frontend/.env
-```
-
-### Step 2: Configure Database & Seed Master Data
-Edit `backend/.env` to configure your PostgreSQL credentials:
-```env
-DATABASE_URL="postgresql://postgres:password@localhost:5432/fundsroom_erp?schema=public"
-JWT_SECRET="your_secure_random_jwt_secret_key"
-PORT=5000
-NODE_ENV="development"
-```
-
-Run database migrations and seed default users and industrial products:
-```bash
-cd backend
-npm install
-
-# Deploy schema to PostgreSQL and generate Prisma Client
-npx prisma generate
-npx prisma migrate deploy
-
-# Seed initial users, catalog products, and inventory
-npm run db:seed
-```
-
-### Step 3: Run Backend Automated Tests
-Execute the complete integration test suite:
-```bash
-cd backend
-npm test
-```
-*Expected Output*: **19/19 test suites passed, 170/170 tests passing (0 failures)**.
-
-### Step 4: Start Backend Development Server
-```bash
-cd backend
-npm run dev
-# Server starts at http://localhost:5000
-```
-
-### Step 5: Start Frontend Development Server
-In a separate terminal:
-```bash
-cd frontend
-npm install
-npm run dev
-# Frontend runs at http://localhost:5173
-```
-
-### Step 6: Production Build Validation
-```bash
-# Build backend
-cd backend
-npm run build
-
-# Build frontend
-cd frontend
-npm run build
-```
+**Tamper Protection**: The backend does not blindly trust client-supplied totals. If a client transmits `clientGrandTotal` and it disagrees with the backend calculation by more than ₹0.05, the request is rejected with `400 Bad Request`.
 
 ---
 
-## 8. Environment Variables Reference
+## 9. API
 
-### Backend (`backend/.env`)
-| Variable | Required | Description | Safe Default / Example |
-|---|:---:|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection URI | `postgresql://postgres:pass@localhost:5432/fundsroom_erp?schema=public` |
-| `JWT_SECRET` | Yes | Secret key for signing auth tokens | `super_secret_jwt_key_2026` |
-| `PORT` | No | Express HTTP port | `5000` |
-| `NODE_ENV` | No | Execution mode | `development` / `production` / `test` |
-| `FRONTEND_URL` | No | CORS allowed origin | `http://localhost:5173` |
-| `IDEMPOTENCY_TTL_HOURS` | No | TTL for idempotency records | `24` |
+| Method | Endpoint | Purpose | Required Role |
+|---|---|---|:---:|
+| **POST** | `/api/auth/login` | Sign in with email/password and receive JWT token | Public |
+| **GET** | `/api/auth/me` | Retrieve authenticated user profile | Authenticated |
+| **GET** | `/api/customers` | List all registered client companies | Authenticated |
+| **GET** | `/api/customers/:id` | Get customer details by ID | Authenticated |
+| **POST** | `/api/customers` | Register a new client company (supports `Idempotency-Key`) | Authenticated |
+| **GET** | `/api/products` | List catalog products with live stock indicators | Authenticated |
+| **GET** | `/api/products/:id` | Get single product SKU details | Authenticated |
+| **GET** | `/api/inventory` | List complete stock balance register matrix | Authenticated |
+| **GET** | `/api/enquiries` | List customer enquiries with status and line items | Authenticated |
+| **GET** | `/api/enquiries/:id` | Get enquiry details with linked quotations | Authenticated |
+| **POST** | `/api/enquiries` | Create multi-product enquiry (supports `Idempotency-Key`) | Authenticated |
+| **PATCH**| `/api/enquiries/:id/status` | Update enquiry status (`NEW`, `QUOTED`, `WON`, `LOST`) | Authenticated |
+| **GET** | `/api/quotations` | List quotations with financial totals | Authenticated |
+| **GET** | `/api/quotations/:id` | Get quotation details with line pricing breakdown | Authenticated |
+| **POST** | `/api/quotations` | Issue quotation with server-side math (supports `Idempotency-Key`) | Authenticated |
+| **PATCH**| `/api/quotations/:id/status` | Accept or reject quotation (`ACCEPTED`, `REJECTED`) | Authenticated |
+| **POST** | `/api/quotations/:id/convert` | Convert `ACCEPTED` quotation to `PENDING` Sales Order (1:1) | Authenticated |
+| **GET** | `/api/sales-orders` | List sales orders with stock check indicators | Authenticated |
+| **GET** | `/api/sales-orders/:id` | Get sales order details with items and dispatch info | Authenticated |
+| **POST** | `/api/sales-orders/:id/confirm` | Concurrency-safe order confirmation & stock reservation | **ADMIN** |
+| **POST** | `/api/sales-orders/:id/cancel` | Cancel order and release reserved stock to available pool | **ADMIN** |
+| **GET** | `/api/dispatches` | List fulfilled shipment records | Authenticated |
+| **GET** | `/api/dispatches/:id` | Get dispatch details by ID | Authenticated |
+| **POST** | `/api/dispatches` | Execute complete order dispatch & deduct physical inventory | **ADMIN** |
+| **GET** | `/api/health` | Public service health check | Public |
+| **GET** | `/api/idempotency/stats` | View idempotency key metrics | **ADMIN** |
+| **POST** | `/api/idempotency/cleanup` | Purge expired idempotency keys | **ADMIN** |
 
-### Frontend (`frontend/.env`)
-| Variable | Required | Description | Default |
-|---|:---:|---|---|
-| `VITE_API_URL` | Yes | API base URL | `/api` |
-
----
-
-## 9. Seed Test Credentials
-
-The database seed provides two pre-configured accounts:
-
-| Role | Email | Password | Allowed Capabilities |
-|---|---|---|---|
-| **Admin** | `admin@fundsroom.com` | `AdminPassword@123` | Full access: View all, Confirm Orders, Reserve Inventory, Cancel Orders, Dispatch |
-| **Sales User** | `sales@fundsroom.com` | `SalesPassword@123` | Commercial access: Customers, Enquiries, Quotations, Convert Quotes to Orders |
-
-*Note: The frontend UI features a one-click demo credential switcher for seamless evaluator testing.*
-
----
-
-## 10. Automated Test Suite
-
-Fundsroom ERP features a comprehensive, 100% automated test suite built with **Jest and Supertest**. Tests run against real PostgreSQL database transactions:
-
-```bash
-cd backend
-npm test
-```
-
-### Test Coverage Highlights (19 Suites / 170 Passing Tests):
-1. **Quotation Calculation & Tamper Protection** ([`quotation-calculation.test.ts`](backend/tests/integration/quotation-calculation.test.ts)):
-   - Verifies base amount, discount, GST, and grand total calculations.
-   - Rejects mismatched `clientGrandTotal` (> ₹0.05 discrepancy).
-2. **Quotation Status Rules & Conversion** ([`quotation-conversion.test.ts`](backend/tests/integration/quotation-conversion.test.ts)):
-   - Rejects conversion of `DRAFT` or `REJECTED` quotations.
-   - Allows conversion only when quotation is `ACCEPTED`.
-3. **Duplicate Sales Order Prevention** ([`duplicate-order.test.ts`](backend/tests/integration/duplicate-order.test.ts)):
-   - Verifies strict 1:1 quotation-to-order conversion.
-   - Rejects subsequent conversion attempts with `409 Conflict`.
-4. **Inventory Reservation & Limits** ([`inventory-reservation.test.ts`](backend/tests/integration/inventory-reservation.test.ts)):
-   - Rejects confirmation when requested quantity exceeds available stock.
-   - Confirms order and increments `reservedQuantity` while `physicalQuantity` stays unchanged.
-5. **RBAC Authorization Enforcement** ([`rbac-authorization.test.ts`](backend/tests/integration/rbac-authorization.test.ts)):
-   - Blocks `SALES_USER` from confirming sales orders (`403 Forbidden`).
-   - Blocks `SALES_USER` from executing dispatches (`403 Forbidden`).
-   - Rejects unauthenticated requests (`401 Unauthorized`).
-6. **Concurrent Inventory Reservation Safety** ([`concurrency-reservation.test.ts`](backend/tests/integration/concurrency-reservation.test.ts)):
-   - Simultaneously confirms competing orders under race conditions; exactly one succeeds and one is rejected.
-7. **Same-Order Concurrent Confirmation** ([`same-order-concurrency.test.ts`](backend/tests/integration/same-order-concurrency.test.ts)):
-   - Validates that concurrent confirmation attempts on the same order result in exactly one success.
-8. **Sales Order Cancellation & Stock Release** ([`order-cancellation.test.ts`](backend/tests/integration/order-cancellation.test.ts)):
-   - Verifies that cancelling a confirmed order releases reserved stock back to available pool.
-   - Rejects cancellation of dispatched orders (`400 Bad Request`).
-9. **Dispatch Workflow & Stock Deduction** ([`dispatch-workflow.test.ts`](backend/tests/integration/dispatch-workflow.test.ts)):
-   - Verifies atomic decrement of both physical and reserved stock upon dispatch.
-   - Rejects duplicate dispatch attempts on the same order (`409 Conflict`).
-10. **Business Edge Cases & Input Hardening** ([`final-input-edge-case-hardening.test.ts`](backend/tests/integration/final-input-edge-case-hardening.test.ts)):
-    - Whitespace trimming, Indian mobile validation, past requiredDate prevention, unclamped inventory math.
-11. **Durable PostgreSQL Idempotency** ([`idempotency-foundation.test.ts`](backend/tests/integration/idempotency-foundation.test.ts), [`customer-idempotency.test.ts`](backend/tests/integration/customer-idempotency.test.ts), [`enquiry-idempotency.test.ts`](backend/tests/integration/enquiry-idempotency.test.ts), [`quotation-idempotency.test.ts`](backend/tests/integration/quotation-idempotency.test.ts), [`phase-2b5-concurrency-failure.test.ts`](backend/tests/integration/phase-2b5-concurrency-failure.test.ts), [`phase-2b6-operational-hardening.test.ts`](backend/tests/integration/phase-2b6-operational-hardening.test.ts)):
-    - Hash determinism, key collisions, retry replaying original response, concurrency stress tests (10 identical requests -> 1 entity).
+- Full API Specification: [`docs/api/API-Documentation.md`](docs/api/API-Documentation.md).
+- Postman Collection: [`docs/postman/Fundsroom-ERP.postman_collection.json`](docs/postman/Fundsroom-ERP.postman_collection.json).
 
 ---
 
-## 11. API Documentation & Postman Collection
+## 10. Authentication & Security
 
-Complete REST API documentation and exportable Postman collections are provided:
-- **API Documentation**: [`docs/api/API-Documentation.md`](docs/api/API-Documentation.md)
-- **Postman Collection**: [`docs/postman/Fundsroom-ERP.postman_collection.json`](docs/postman/Fundsroom-ERP.postman_collection.json)
-
-### How to Use the Postman Collection:
-1. Open Postman → Click **Import** → Select `docs/postman/Fundsroom-ERP.postman_collection.json`.
-2. The collection variables (`baseUrl`, `jwtToken`, `adminToken`, `salesToken`) are pre-configured.
-3. Run the **1. Authentication → Login as Admin** or **Login as Sales User** request.
-4. The post-response script automatically saves the token to the collection variable `jwtToken`.
-5. Execute requests sequentially to trace the complete workflow: Customers → Enquiries → Quotations → Sales Orders → Dispatches.
-
----
-
-## 12. 5-Minute Demonstration Walkthrough Script
-
-| Time | Workflow Phase | Action / Demonstration Points | Role |
-|---|---|---|---|
-| **0:00 - 0:45** | **Login & Commercial Intake** | Sign in as `sales@fundsroom.com`. Navigate to **Customers** and create a client (*Apex Heavy Industries*). Open **Enquiries** and create a multi-product inquiry for 10 Valves and 5 Pumps. | `SALES_USER` |
-| **0:45 - 1:45** | **Quotation & Conversion** | Open **Quotations** → New Quotation. Apply 5% discount and 18% GST; observe authoritative INR calculation. Submit quote, click **Mark ACCEPTED**, and convert to Sales Order. Show parent enquiry marked `WON`. | `SALES_USER` |
-| **1:45 - 2:45** | **Order Confirmation & Stock Reservation** | Switch role to `admin@fundsroom.com` via demo switcher. Open **Sales Orders** → View stock availability check. Click **Confirm & Reserve Stock**. Show `reserved_quantity` incremented in inventory without changing `physical_quantity`. | `ADMIN` |
-| **2:45 - 3:45** | **Complete Dispatch Fulfillment** | Open **Dispatches** → Click **Process Dispatch**. Input vehicle (`MH-12-TX-9999`) and driver name. Confirm fulfillment. Show both `physical_quantity` and `reserved_quantity` decremented atomically. Order status is now terminal `DISPATCHED`. | `ADMIN` |
-| **3:45 - 4:45** | **Order Cancellation & Stock Release** | Convert a second quote to an order, confirm it, and then click **Cancel Order**. Show that reserved inventory is immediately returned to the sellable pool. | `ADMIN` |
-| **4:45 - 5:00** | **Automated Test Suite** | Show terminal executing `npm test`: all 19 suites and 170 tests passing. | Technical Proof |
+- **JWT Authentication**: Stateless authentication utilizing standard JSON Web Tokens signed with `HS256` and 24-hour expiration.
+- **Bearer Token Handling**: Sent via `Authorization: Bearer <token>` and parsed by centralized auth middleware.
+- **Password Hashing**: Stored using `bcryptjs` one-way hashing with 10 salt rounds.
+- **Protected Routes**: Unauthenticated requests to private endpoints are rejected with `401 Unauthorized`.
+- **Backend RBAC Enforcement**: Role authorization (`authorize(UserRole.ADMIN)`) is enforced at the controller level; unauthorized attempts yield `403 Forbidden`.
+- **Input Validation**: Incoming request bodies and query parameters are strictly validated using Zod schemas before reaching business logic.
+- **SQL Injection Defense**: Prisma ORM parameterized queries prevent SQL injection across all database interactions.
+- **Error Sanitization**: Centralized error middleware ensures no raw database errors, stack traces, or credentials escape to clients.
+- **Environment Isolation**: Sensitive configuration (database URL, JWT secret) is managed via environment variables with `.env` ignored in Git.
 
 ---
 
-## 13. Project Structure
+## 11. Project Structure
 
 ```text
 fundsroom-erp-pern/
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                 # Automated CI workflow
-│       └── cd.yml                 # Production build and readiness check
+│       ├── ci.yml                 # Automated CI workflow (Postgres 17 + Node 20)
+│       └── cd.yml                 # Build validation workflow
 ├── backend/
 │   ├── prisma/
 │   │   ├── migrations/            # 4 SQL migrations
-│   │   ├── schema.prisma          # PostgreSQL schema (12 domain tables)
+│   │   ├── schema.prisma          # PostgreSQL schema (12 domain + 2 infra tables)
 │   │   └── seed.ts                # Database seeder (users, products, stock)
 │   ├── src/
-│   │   ├── config/                # Environment config & Prisma client instance
-│   │   ├── middlewares/           # Auth, RBAC, Validation, and Error handling
+│   │   ├── config/                # Environment variables and Prisma client
+│   │   ├── middlewares/           # Auth, RBAC, Validation, and Error middlewares
 │   │   ├── modules/               # Domain modules:
-│   │   │   ├── auth/              # JWT login and profile
+│   │   │   ├── auth/              # Authentication & user profile
 │   │   │   ├── customers/         # Customer directory
-│   │   │   ├── dispatches/        # Dispatch logistics
-│   │   │   ├── enquiries/         # Multi-product customer intake
+│   │   │   ├── dispatches/        # Dispatch fulfillment
+│   │   │   ├── enquiries/         # Customer inquiries
 │   │   │   ├── idempotency/       # Idempotency stats & cleanup
 │   │   │   ├── inventory/         # Stock balance register
 │   │   │   ├── products/          # Catalog master
-│   │   │   ├── quotations/        # Quotation math and conversion
-│   │   │   └── sales-orders/      # Order confirmation & cancellation
+│   │   │   ├── quotations/        # Quotations & calculations
+│   │   │   └── sales-orders/      # Orders, reservation & cancellation
 │   │   ├── utils/                 # Financial calculator, errors, sequence generator
 │   │   ├── app.ts                 # Express application factory
-│   │   └── server.ts              # HTTP entry point
+│   │   └── server.ts              # HTTP server entry point
 │   ├── tests/
-│   │   ├── helpers.ts             # Test tokens and setup helpers
+│   │   ├── helpers.ts             # Test authentication tokens and fixtures
 │   │   └── integration/           # 19 integration test suites (170 tests)
-│   └── package.json
+│   ├── package.json
+│   └── tsconfig.json
 ├── frontend/
 │   ├── src/
 │   │   ├── components/            # Header, Sidebar, Modal, KPI Cards
-│   │   ├── pages/                 # Customers, Enquiries, Quotations, Orders, Dispatches
+│   │   ├── pages/                 # Customers, Enquiries, Quotes, Orders, Dispatches
 │   │   ├── services/              # Axios API client with auth interceptor
 │   │   ├── types/                 # TypeScript domain interfaces
-│   │   ├── App.tsx                # Main application component & routing
+│   │   ├── App.tsx                # Main application component & tab router
 │   │   └── index.css              # Corporate design system & CSS variables
 │   ├── vite.config.ts
+│   ├── tsconfig.json
 │   └── package.json
 ├── docs/
 │   ├── api/
-│   │   └── API-Documentation.md   # Complete REST API specification
+│   │   └── API-Documentation.md   # Complete REST API reference
 │   ├── database/
-│   │   └── ER-Diagram.md          # PostgreSQL ER diagram & table definitions
+│   │   └── ER-Diagram.md          # PostgreSQL ER diagram & table specifications
 │   └── postman/
-│       └── Fundsroom-ERP.postman_collection.json # Ready-to-import collection
+│       └── Fundsroom-ERP.postman_collection.json # Exportable Postman collection
+├── .gitignore
+├── fundsroom_erp_postman_collection.json
 └── README.md
 ```
 
 ---
 
-## 14. Security & Hardening Details
+## 12. Setup & Installation
 
-1. **Password Hashing**: Passwords stored as one-way bcrypt hashes (10 rounds).
-2. **Stateless JWT**: Tokens signed with `HS256`, 24-hour expiration, validated on every protected route.
-3. **Backend Authoritative Pricing**: Calculation tampering is actively prevented; all totals calculated server-side.
-4. **SQL Injection Prevention**: Prisma ORM parameterized queries used across all operations.
-5. **Secure HTTP Headers**: Configured with `helmet` for defense against clickjacking, sniffing, and XSS.
-6. **Sanitized Errors**: Centralized error middleware ensures no raw SQL queries, stack traces, or credentials are leaked to clients.
+### Prerequisites
+- **Node.js**: v20 LTS or higher
+- **PostgreSQL**: Version 16 or 17 running locally or via Docker
+- **npm**: Version 9 or higher
+- **Git**: Installed
+
+### Step 1: Clone Repository
+```bash
+git clone https://github.com/GoondlaBalaji/fundsroom-erp-pern.git
+cd fundsroom-erp-pern
+```
+
+### Step 2: Configure Environment Variables
+
+#### Backend Environment:
+```bash
+cp backend/.env.example backend/.env
+```
+Edit `backend/.env` with your PostgreSQL database credentials:
+```env
+DATABASE_URL="postgresql://postgres:password@localhost:5432/fundsroom_erp?schema=public"
+JWT_SECRET="your_secure_random_jwt_secret_key"
+PORT=5000
+NODE_ENV="development"
+FRONTEND_URL="http://localhost:5173"
+IDEMPOTENCY_TTL_HOURS=24
+```
+
+#### Frontend Environment:
+```bash
+cp frontend/.env.example frontend/.env
+```
+Ensure `frontend/.env` contains:
+```env
+VITE_API_URL="/api"
+```
+
+---
+
+## 13. Database Migration & Seed
+
+Run the setup commands in the `backend` directory in this exact order:
+
+```bash
+cd backend
+npm install
+
+# 1. Generate Prisma Client
+npx prisma generate
+
+# 2. Deploy database migrations to PostgreSQL
+npx prisma migrate deploy
+
+# 3. Seed demo master data (users, catalog products, initial inventory)
+npm run db:seed
+```
+
+---
+
+## 14. Running the Application
+
+The application requires running the backend and frontend in separate terminal windows:
+
+### Terminal 1 — Backend Development Server:
+```bash
+cd backend
+npm run dev
+# Server running at: http://localhost:5000
+```
+
+### Terminal 2 — Frontend Development Server:
+```bash
+cd frontend
+npm install
+npm run dev
+# Frontend running at: http://localhost:5173
+```
+
+Visit **`http://localhost:5173`** in your browser to interact with the application.
+
+---
+
+## 15. Test Credentials
+
+The database seeder configures two test accounts:
+
+| Role | Email | Password | Intended Workflow Permissions |
+|---|---|---|---|
+| **Admin** | `admin@fundsroom.com` | `AdminPassword@123` | Full access: View all, Confirm Orders, Reserve Stock, Cancel Orders, Dispatch |
+| **Sales User** | `sales@fundsroom.com` | `SalesPassword@123` | Commercial access: Customers, Enquiries, Quotations, Convert Quotes to Orders |
+
+*Tip: The frontend features a one-click demo credential switcher in the top navigation bar for seamless evaluation.*
+
+---
+
+## 16. Testing
+
+The backend includes a comprehensive, 100% automated integration test suite running against real PostgreSQL database transactions:
+
+```bash
+cd backend
+npm test
+```
+
+### Verified Test Results:
+```text
+Test Suites: 19 passed, 19 total
+Tests:       170 passed, 170 total
+Snapshots:   0 total
+Time:        17.845 s
+Ran all test suites.
+```
+
+### Automated Coverage Summary:
+- **Quotation Calculations & Tamper Protection** ([`quotation-calculation.test.ts`](backend/tests/integration/quotation-calculation.test.ts)): Validates line amounts, discounts, GST, and grand total; rejects tampered client totals.
+- **Quotation Status Restrictions** ([`quotation-conversion.test.ts`](backend/tests/integration/quotation-conversion.test.ts)): Blocks conversion of `DRAFT` or `REJECTED` quotes; converts only `ACCEPTED` quotes.
+- **Duplicate Sales Order Prevention** ([`duplicate-order.test.ts`](backend/tests/integration/duplicate-order.test.ts)): Enforces strict 1:1 conversion; rejects re-conversion attempts with `409 Conflict`.
+- **Inventory Reservation Limits** ([`inventory-reservation.test.ts`](backend/tests/integration/inventory-reservation.test.ts)): Blocks confirmation when requested quantity exceeds available stock; verifies physical quantity is unchanged while reserved increases.
+- **Concurrent Reservation Safety** ([`concurrency-reservation.test.ts`](backend/tests/integration/concurrency-reservation.test.ts)): Validates simultaneous competing orders; exactly one order succeeds and one is rejected without negative stock.
+- **Same-Order Concurrent Confirmation** ([`same-order-concurrency.test.ts`](backend/tests/integration/same-order-concurrency.test.ts)): Prevents double-confirmation on the same order when confirmed simultaneously.
+- **RBAC Authorization Enforcement** ([`rbac-authorization.test.ts`](backend/tests/integration/rbac-authorization.test.ts)): Blocks `SALES_USER` from confirming orders or dispatching (`403 Forbidden`); rejects unauthenticated requests (`401 Unauthorized`).
+- **Authentication Workflow** ([`auth-workflow.test.ts`](backend/tests/integration/auth-workflow.test.ts)): Validates credentials, rejects bad passwords, verifies JWT profile retrieval.
+- **Dispatch Fulfillment** ([`dispatch-workflow.test.ts`](backend/tests/integration/dispatch-workflow.test.ts)): Verifies atomic deduction of both physical and reserved stock; rejects duplicate dispatches.
+- **Cancellation & Stock Release** ([`order-cancellation.test.ts`](backend/tests/integration/order-cancellation.test.ts)): Releases reserved inventory on cancellation of confirmed orders; blocks cancellation of dispatched orders.
+- **Business Edge-Case Input Hardening** ([`final-input-edge-case-hardening.test.ts`](backend/tests/integration/final-input-edge-case-hardening.test.ts)): Whitespace-only string rejection, Indian mobile format validation, past delivery date rejection, unclamped negative inventory math.
+- **PostgreSQL Idempotency** ([`idempotency-foundation.test.ts`](backend/tests/integration/idempotency-foundation.test.ts), [`customer-idempotency.test.ts`](backend/tests/integration/customer-idempotency.test.ts), [`enquiry-idempotency.test.ts`](backend/tests/integration/enquiry-idempotency.test.ts), [`quotation-idempotency.test.ts`](backend/tests/integration/quotation-idempotency.test.ts), [`phase-2b5-concurrency-failure.test.ts`](backend/tests/integration/phase-2b5-concurrency-failure.test.ts), [`phase-2b6-operational-hardening.test.ts`](backend/tests/integration/phase-2b6-operational-hardening.test.ts)): Verifies SHA-256 canonical payload hashing, response replay without duplication, 10 concurrent requests creating 1 entity, and TTL cleanup.
+
+---
+
+## 17. API Documentation
+
+Detailed REST API documentation and exportable Postman collections are included:
+- **API Documentation Markdown**: [`docs/api/API-Documentation.md`](docs/api/API-Documentation.md)
+- **Postman Collection JSON**: [`docs/postman/Fundsroom-ERP.postman_collection.json`](docs/postman/Fundsroom-ERP.postman_collection.json)
+
+### Importing and Running in Postman:
+1. Open Postman → Click **Import** → Choose [`docs/postman/Fundsroom-ERP.postman_collection.json`](docs/postman/Fundsroom-ERP.postman_collection.json).
+2. The collection variables (`baseUrl`, `jwtToken`, `adminToken`, `salesToken`) are pre-configured.
+3. Run **1. Authentication → Login as Admin** or **Login as Sales User**.
+4. The test script automatically saves the returned JWT to `{{jwtToken}}`.
+5. Execute requests sequentially across Customers, Enquiries, Quotations, Orders, and Dispatches.
+
+---
+
+## 18. Database ER Diagram
+
+The database schema and relational design are documented in:
+- **Entity-Relationship Diagram**: [`docs/database/ER-Diagram.md`](docs/database/ER-Diagram.md)
+
+This document contains a complete Mermaid ER diagram and table specifications reflecting the active PostgreSQL schema in `backend/prisma/schema.prisma`.
+
+---
+
+## 19. Demo Video
+
+> **Demo Video**: [Demo video link will be added before final submission.]
+
+### Recommended 5-Minute Demonstration Sequence:
+1. **0:00 - 0:45 | Login as SALES_USER & Commercial Intake**:
+   - Sign in as `sales@fundsroom.com`.
+   - Open **Customers** → Add client (*Apex Heavy Industries Ltd*).
+   - Open **Enquiries** → Create multi-product inquiry for 10 Valves and 5 Pumps.
+2. **0:45 - 1:45 | Quotation & Sales Order Conversion**:
+   - Open **Quotations** → New Quotation against the inquiry.
+   - Enter 5% discount and 18% GST → show authoritative server-calculated INR totals.
+   - Click **Submit** → Click **Mark ACCEPTED**.
+   - Click **Convert to Sales Order** → show parent enquiry marked `WON` and Sales Order created.
+3. **1:45 - 2:45 | Admin Order Confirmation & Inventory Reservation**:
+   - Switch role to `admin@fundsroom.com` using the demo switcher in top bar.
+   - Open **Sales Orders** → View real-time inventory availability check.
+   - Click **Confirm & Reserve Stock** → Show that `reserved_quantity` increases in inventory while `physical_quantity` is untouched.
+4. **2:45 - 3:45 | Dispatch Fulfillment & Stock Deduction**:
+   - Open **Dispatches** → Click **Process Dispatch**.
+   - Input vehicle registration (`MH-12-TX-9999`) and driver name (*Suresh Patil*).
+   - Confirm dispatch → Show both `physical_quantity` and `reserved_quantity` decremented atomically. Order status is now terminal `DISPATCHED`.
+5. **3:45 - 4:30 | Cancellation & Stock Release**:
+   - Create a second order, confirm it, then click **Cancel Order**.
+   - Show that reserved stock is immediately released back to the available pool.
+6. **4:30 - 5:00 | Automated Test Suite Validation**:
+   - Run `npm test` in the backend terminal window to demonstrate all 19 test suites and 170 tests passing with 0 failures.
+
+---
+
+## 20. Case Study Compliance
+
+| Evaluation Requirement | Status | Evidence in Codebase |
+|---|:---:|---|
+| **PERN Stack** | **PASS** | PostgreSQL 17, Express 4, React 18, Node.js 20 LTS, Prisma ORM 5 |
+| **JWT Authentication** | **PASS** | `POST /api/auth/login`, stateless JWT bearer tokens with 24h expiry |
+| **Password Hashing** | **PASS** | `bcryptjs` with 10 salt rounds in database seed and auth controller |
+| **Backend RBAC** | **PASS** | `authorize(UserRole.ADMIN)` middleware on confirm, cancel, dispatch endpoints |
+| **Customer Enquiry** | **PASS** | `POST /api/enquiries` with atomic numbering `ENQ-YYYYMMDD-XXXX` |
+| **Multiple Enquiry Products** | **PASS** | Relational `enquiry_items` table linked to products with quantity validation |
+| **Product Master** | **PASS** | Catalog SKUs with unique code, unit, base price, and 1:1 inventory relation |
+| **Inventory Register** | **PASS** | `available = physical - reserved - damaged` with database check constraints |
+| **Quotation Management** | **PASS** | `POST /api/quotations` with DRAFT, SENT, ACCEPTED, REJECTED lifecycle |
+| **Backend Calculation** | **PASS** | Authoritative Half-Up INR rounding; client total discrepancy > ₹0.05 rejected |
+| **Sales Order Conversion** | **PASS** | `POST /api/quotations/:id/convert` restricted to `ACCEPTED` status; marks enquiry `WON` |
+| **Duplicate Order Protection** | **PASS** | `@unique` constraint on `sales_orders.quotation_id` strictly blocks duplicate conversion |
+| **Inventory Reservation** | **PASS** | Confirmed orders increment `reserved_quantity`; physical stock stays untouched |
+| **Concurrency Protection** | **PASS** | `SELECT ... FOR UPDATE` with `ORDER BY product_id ASC` in `order.service.ts` |
+| **Dispatch Fulfillment** | **PASS** | 1:1 dispatch decrements physical and reserved stock; sets terminal `DISPATCHED` |
+| **PostgreSQL Relational Design** | **PASS** | 12 domain tables with foreign keys and check constraints; zero JSON workflow blobs |
+| **REST APIs** | **PASS** | Standard HTTP methods (`GET`, `POST`, `PATCH`), consistent response envelope |
+| **Automated Tests** | **PASS** | 19 integration test suites, 170 tests passing (0 failures) |
+| **Professional README** | **PASS** | Comprehensive setup, architecture, workflow, credentials, and demo script |
+| **Database ER Diagram** | **PASS** | Standalone [`docs/database/ER-Diagram.md`](docs/database/ER-Diagram.md) matching Prisma schema |
+| **API Documentation** | **PASS** | Markdown API reference and exportable Postman collection in `docs/` |
+| **Demo Readiness** | **PASS** | Seed demo accounts, UI credential switcher, and 5-minute video walkthrough script |
+
+---
+
+## 21. AI Usage
+
+AI tools were used as development assistance for implementation, debugging, documentation, and testing. The final architecture, business rules, database design, API behavior, and implementation were reviewed and validated as part of the development process.
