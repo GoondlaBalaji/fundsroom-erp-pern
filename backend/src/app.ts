@@ -9,6 +9,7 @@ import enquiryRoutes from './modules/enquiries/enquiry.routes';
 import quotationRoutes from './modules/quotations/quotation.routes';
 import orderRoutes from './modules/sales-orders/order.routes';
 import dispatchRoutes from './modules/dispatches/dispatch.routes';
+import idempotencyRoutes from './modules/idempotency/idempotency.routes';
 import { errorHandler } from './middlewares/error.middleware';
 
 export function createApp(): Express {
@@ -20,7 +21,8 @@ export function createApp(): Express {
     cors({
       origin: '*',
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      // Idempotency-Key is included so browsers allow the header in CORS requests
+      allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
     })
   );
   app.use(express.json());
@@ -39,6 +41,9 @@ export function createApp(): Express {
   app.use('/api/quotations', quotationRoutes);
   app.use('/api/sales-orders', orderRoutes);
   app.use('/api/dispatches', dispatchRoutes);
+
+  // Idempotency management (admin only)
+  app.use('/api/idempotency', idempotencyRoutes);
 
   // Centralized error handling
   app.use(errorHandler);

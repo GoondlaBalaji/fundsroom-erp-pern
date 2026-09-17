@@ -9,4 +9,11 @@ export const config = {
   DATABASE_URL: process.env.DATABASE_URL || '',
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
   NODE_ENV: process.env.NODE_ENV || 'development',
+  // Idempotency TTL in hours.
+  // Controls how long an idempotency key remains valid for response replay.
+  // After this window the key is treated as expired and will not replay.
+  // Default: 24 hours. Set via IDEMPOTENCY_TTL_HOURS in .env.
+  IDEMPOTENCY_TTL_HOURS: process.env.IDEMPOTENCY_TTL_HOURS
+    ? parseInt(process.env.IDEMPOTENCY_TTL_HOURS, 10)
+    : 24,
 };

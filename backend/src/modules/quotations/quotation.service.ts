@@ -1,5 +1,5 @@
 import prisma from '../../config/prisma';
-import { QuotationStatus, SalesOrderStatus, EnquiryStatus } from '@prisma/client';
+import { Prisma, QuotationStatus, SalesOrderStatus, EnquiryStatus } from '@prisma/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../utils/errors';
 import { calculateQuotationTotals, CalculationItemInput } from '../../utils/calculator';
 import { nextSequence, todayKey } from '../../utils/sequence';
@@ -68,8 +68,26 @@ export class QuotationService {
   }
 
   static async create(data: CreateQuotationDTO, userId: string) {
+    return QuotationService.createInTx(prisma, data, userId);
+  }
+
+  /**
+   * Create a quotation + items within a supplied Prisma client/transaction.
+   * Used by the idempotency-aware controller to coordinate inside one transaction.
+   *
+   * All financial validation (tamper detection, authoritative calculation) is
+   * performed here regardless of whether the caller is the idempotent or
+   * non-idempotent path. The backend remains authoritative for all totals.
+   */
+  static async createInTx(
+    tx: Prisma.TransactionClient | typeof prisma,
+    data: CreateQuotationDTO,
+    userId: string
+  ) {
+    const client = tx as Prisma.TransactionClient;
+
     // 1. Fetch enquiry to link customer and validate status
-    const enquiry = await prisma.enquiry.findUnique({
+    const enquiry = await client.enquiry.findUnique({
       where: { id: data.enquiryId },
       include: { customer: true },
     });
@@ -79,10 +97,6 @@ export class QuotationService {
     }
 
     // BUG-06 FIX: Block quotation creation for LOST or WON enquiries.
-    // LOST: The commercial opportunity is closed — no new quotation is meaningful.
-    // WON: The enquiry has already been converted to a Sales Order via the accepted quotation.
-    //      Creating a new quotation on a WON enquiry would bypass the audit trail and allow
-    //      a second conversion path, which is a workflow integrity violation.
     if (enquiry.status === EnquiryStatus.LOST) {
       throw new ValidationError(
         `Cannot generate quotation for an enquiry with status 'LOST'`
@@ -94,60 +108,56 @@ export class QuotationService {
       );
     }
 
-    // 2. Authoritative backend calculation
+    // 2. Authoritative backend calculation — never trusts client totals
     const calc = calculateQuotationTotals(data.items);
 
-    // Optional check: if client sent a grand total and it significantly disagrees, reject or log tampering
+    // Tamper detection: if client sent a grand total and it significantly disagrees, reject
     if (data.clientGrandTotal !== undefined && Math.abs(data.clientGrandTotal - calc.grandTotal) > 0.05) {
       throw new ValidationError(
         `Quotation total discrepancy detected. Client: ₹${data.clientGrandTotal}, Authoritative Backend Total: ₹${calc.grandTotal}`
       );
     }
 
-    // 3. Save quotation and items transactionally with atomic sequence number
-    return prisma.$transaction(async (tx) => {
-      // BUG-08 FIX: Atomic sequence allocation inside the transaction
-      const dateStr = todayKey();
-      const seq = await nextSequence(tx, 'QTN', dateStr);
-      const quotationNumber = `QTN-${dateStr}-${seq}`;
+    // 3. Atomic sequence allocation inside the transaction
+    // BUG-08 FIX: concurrent-safe document number generation
+    const dateStr = todayKey();
+    const seq = await nextSequence(client, 'QTN', dateStr);
+    const quotationNumber = `QTN-${dateStr}-${seq}`;
 
-      const quotation = await tx.quotation.create({
-        data: {
-          quotationNumber,
-          enquiryId: enquiry.id,
-          customerId: enquiry.customerId,
-          validUntil: new Date(data.validUntil),
-          subtotal: calc.subtotal,
-          totalDiscount: calc.totalDiscount,
-          totalGst: calc.totalGst,
-          grandTotal: calc.grandTotal,
-          status: QuotationStatus.DRAFT,
-          createdById: userId,
-          items: {
-            create: calc.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              unitPrice: item.unitPrice,
-              discountPct: item.discountPct,
-              gstPct: item.gstPct,
-              baseAmount: item.baseAmount,
-              discountAmount: item.discountAmount,
-              netAmount: item.netAmount,
-              gstAmount: item.gstAmount,
-              lineAmount: item.lineAmount,
-            })),
-          },
+    return client.quotation.create({
+      data: {
+        quotationNumber,
+        enquiryId: enquiry.id,
+        customerId: enquiry.customerId,
+        validUntil: new Date(data.validUntil),
+        subtotal: calc.subtotal,
+        totalDiscount: calc.totalDiscount,
+        totalGst: calc.totalGst,
+        grandTotal: calc.grandTotal,
+        status: QuotationStatus.DRAFT,
+        createdById: userId,
+        items: {
+          create: calc.items.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            discountPct: item.discountPct,
+            gstPct: item.gstPct,
+            baseAmount: item.baseAmount,
+            discountAmount: item.discountAmount,
+            netAmount: item.netAmount,
+            gstAmount: item.gstAmount,
+            lineAmount: item.lineAmount,
+          })),
         },
-        include: {
-          customer: true,
-          enquiry: true,
-          items: {
-            include: { product: true },
-          },
+      },
+      include: {
+        customer: true,
+        enquiry: true,
+        items: {
+          include: { product: true },
         },
-      });
-
-      return quotation;
+      },
     });
   }
 
